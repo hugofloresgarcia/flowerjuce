@@ -35,6 +35,7 @@ scratch/
 .ssh_known_hosts
 
 third_party/onnxruntime-osx-universal2-1.23.2/
+third_party/*.tgz
 
 tests/output/
 tests/plots/

@@ -10,5 +10,8 @@ else()
     add_subdirectory(embeddingsampler)
     add_subdirectory(layercake)
     add_subdirectory(test_audio_io_delay)
+    add_subdirectory(sao_cli)
+    add_subdirectory(streamgen)
+    add_subdirectory(streamgen_cli)
 endif()
 
