@@ -17,10 +17,10 @@ target_sources(StreamGenCLI PRIVATE
     ${STREAMGEN_APP_DIR}/StreamGenDebugLog.h
     ${STREAMGEN_APP_DIR}/StreamGenProcessor.h
     ${STREAMGEN_APP_DIR}/StreamGenProcessor.cpp
-    ${STREAMGEN_APP_DIR}/AudioThreadTelemetry.h
-    ${STREAMGEN_APP_DIR}/AudioThreadTelemetry.cpp
     ${STREAMGEN_APP_DIR}/InferenceWorker.h
     ${STREAMGEN_APP_DIR}/InferenceWorker.cpp
+    ${STREAMGEN_APP_DIR}/PreVaeDebugDump.h
+    ${STREAMGEN_APP_DIR}/PreVaeDebugDump.cpp
     ${STREAMGEN_APP_DIR}/GenerationScheduler.h
     ${STREAMGEN_APP_DIR}/GenerationScheduler.cpp
     ${STREAMGEN_APP_DIR}/GenerationTimelineStore.h

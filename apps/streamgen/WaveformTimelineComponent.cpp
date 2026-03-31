@@ -387,7 +387,9 @@ void WaveformTimelineComponent::paint(juce::Graphics& g)
             const int64_t ws = rec.job.window_start_sample;
             const int64_t ke = rec.job.keep_end_sample;
             const int64_t we = rec.job.window_end_sample;
-            const int64_t gen_len_samp = we - ke;
+            const int64_t gen_len_sched = we - ke;
+            const int64_t gen_len_samp =
+                (rec.has_completed && rec.gen_samples > 0) ? rec.gen_samples : gen_len_sched;
             const int64_t land_start = rec.job.output_start_sample();
             const int64_t land_end = land_start + gen_len_samp;
 
@@ -404,7 +406,7 @@ void WaveformTimelineComponent::paint(juce::Graphics& g)
 
             const float keep_y = wf_top + band + k_job_band_gap_px;
 
-            if (m_timeline_role == TimelineWaveRole::SaxInput)
+            if (m_timeline_role == TimelineWaveRole::StreamgenAudio)
             {
                 if (input_hi > input_lo)
                 {
@@ -436,7 +438,7 @@ void WaveformTimelineComponent::paint(juce::Graphics& g)
             }
 
             juce::String lbl = "#" + juce::String(rec.job_id);
-            if (m_timeline_role == TimelineWaveRole::SaxInput)
+            if (m_timeline_role == TimelineWaveRole::StreamgenAudio)
                 lbl += " @" + format_clock_ms(rec.scheduled_system_ms);
             else if (rec.has_completed && rec.gen_samples > 0)
             {

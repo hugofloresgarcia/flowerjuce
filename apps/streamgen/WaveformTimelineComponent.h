@@ -1,6 +1,7 @@
 #pragma once
 
 #include "GenerationTimelineStore.h"
+#include "MusicalTime.h"
 #include "TimeRuler.h"
 
 #include <juce_gui_basics/juce_gui_basics.h>
@@ -8,9 +9,9 @@
 
 namespace streamgen {
 
-/// Which lane to draw for paired sax/drums job coloring.
+/// Which lane to draw for paired streamgen_audio / drums job coloring.
 enum class TimelineWaveRole {
-    SaxInput,
+    StreamgenAudio,
     DrumsOutput
 };
 
@@ -48,7 +49,7 @@ public:
         const float* drums_hold_min = nullptr,
         const float* drums_hold_max = nullptr);
 
-    /// Set the label displayed in the top-left corner (e.g. "SAX INPUT", "DRUMS OUTPUT").
+    /// Set the label displayed in the top-left corner (e.g. "STREAMGEN AUDIO", "DRUMS OUTPUT").
     void set_label(const juce::String& label) { m_label = label; }
 
     /// Set a source tag shown next to the label (e.g. "[SIM]", "[WARMUP]", "[GEN #5]").
@@ -75,7 +76,7 @@ private:
     juce::String m_source_tag;
 
     const std::vector<JobTimelineRecord>* m_timeline_jobs = nullptr;
-    TimelineWaveRole m_timeline_role = TimelineWaveRole::SaxInput;
+    TimelineWaveRole m_timeline_role = TimelineWaveRole::StreamgenAudio;
 
     std::vector<float> m_drums_warm_min_px;
     std::vector<float> m_drums_warm_max_px;
@@ -86,7 +87,7 @@ private:
     bool m_drums_source_split = false;
 
     bool m_paint_musical = false;
-    float m_paint_bpm = 120.0f;
+    float m_paint_bpm = kStreamGenDefaultBpm;
     int m_paint_beats_per_bar = 4;
     int m_paint_time_sig_d = 4;
 

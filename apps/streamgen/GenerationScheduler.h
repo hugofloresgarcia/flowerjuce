@@ -1,5 +1,6 @@
 #pragma once
 
+#include "MusicalTime.h"
 #include "TimeRuler.h"
 #include <vector>
 #include <mutex>
@@ -25,6 +26,10 @@ public:
     /// Args:
     ///     constants: Model window and timing parameters from the Zenon config.
     void configure(const ModelConstants& constants);
+
+    /// Set `hop_seconds` from the configured model window and current `keep_ratio`:
+    /// `window_seconds * (1 - keep_ratio)` so each hop advances by the generated (non-kept) fraction.
+    void sync_hop_seconds_to_keep_ratio();
 
     /// Sample rate of the live audio device (callback / ring). If unset (0), hop/delay use model rate.
     void set_playback_sample_rate(int hz);
@@ -60,6 +65,8 @@ public:
     }
 
     // --- Parameters (set from UI thread, read from audio/worker threads) ---
+    /// Wall-clock hop (seconds) when `musical_time_enabled` is false. Default is overwritten in
+    /// `configure()` via `sync_hop_seconds_to_keep_ratio()` (≈ half the ~11.9s window for keep 0.5).
     std::atomic<float> hop_seconds{3.0f};
     std::atomic<float> keep_ratio{0.5f};
     std::atomic<int> steps{8};
@@ -71,7 +78,7 @@ public:
     /// When true, hop and schedule delay use beats + BPM; ruler/UI show bars/beats.
     std::atomic<bool> musical_time_enabled{false};
     /// Beats per minute (clamped on use to [20, 400]).
-    std::atomic<float> bpm{120.0f};
+    std::atomic<float> bpm{kStreamGenDefaultBpm};
     /// Time signature: beats per bar (numerator) and denominator (display / future).
     std::atomic<int> time_sig_numerator{4};
     std::atomic<int> time_sig_denominator{4};

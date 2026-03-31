@@ -4,20 +4,20 @@ namespace streamgen {
 
 MixerComponent::MixerComponent()
 {
-    m_sax_label.setText("Sax", juce::dontSendNotification);
-    m_sax_label.setJustificationType(juce::Justification::centred);
-    addAndMakeVisible(m_sax_label);
+    m_streamgen_audio_label.setText("Streamgen", juce::dontSendNotification);
+    m_streamgen_audio_label.setJustificationType(juce::Justification::centred);
+    addAndMakeVisible(m_streamgen_audio_label);
 
-    m_sax_slider.setSliderStyle(juce::Slider::LinearVertical);
-    m_sax_slider.setRange(0.0, 2.0, 0.01);
-    m_sax_slider.setValue(1.0);
-    m_sax_slider.setTextBoxStyle(juce::Slider::TextBoxBelow, false, 40, 16);
-    m_sax_slider.onValueChange = [this]()
+    m_streamgen_audio_slider.setSliderStyle(juce::Slider::LinearVertical);
+    m_streamgen_audio_slider.setRange(0.0, 2.0, 0.01);
+    m_streamgen_audio_slider.setValue(0.0);
+    m_streamgen_audio_slider.setTextBoxStyle(juce::Slider::TextBoxBelow, false, 40, 16);
+    m_streamgen_audio_slider.onValueChange = [this]()
     {
-        if (on_sax_gain_changed)
-            on_sax_gain_changed(static_cast<float>(m_sax_slider.getValue()));
+        if (on_streamgen_audio_gain_changed)
+            on_streamgen_audio_gain_changed(static_cast<float>(m_streamgen_audio_slider.getValue()));
     };
-    addAndMakeVisible(m_sax_slider);
+    addAndMakeVisible(m_streamgen_audio_slider);
 
     m_drums_label.setText("Drums", juce::dontSendNotification);
     m_drums_label.setJustificationType(juce::Justification::centred);
@@ -56,8 +56,8 @@ void MixerComponent::resized()
 
     const int label_height = 16;
 
-    m_sax_label.setBounds(left.removeFromTop(label_height));
-    m_sax_slider.setBounds(left);
+    m_streamgen_audio_label.setBounds(left.removeFromTop(label_height));
+    m_streamgen_audio_slider.setBounds(left);
 
     m_drums_label.setBounds(right.removeFromTop(label_height));
     m_drums_slider.setBounds(right);

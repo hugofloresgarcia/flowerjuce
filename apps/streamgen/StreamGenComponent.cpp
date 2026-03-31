@@ -6,10 +6,10 @@ namespace streamgen {
 
 namespace {
 
-constexpr const char* k_default_warmup_audio_rel = "tests/streamgen_test_audio/drums_120bpm.wav";
-constexpr const char* k_default_sim_rel = "tests/streamgen_test_audio/synth_120bpm_medium.wav";
+constexpr const char* k_default_warmup_audio_rel = "tests/streamgen_slakh_test_audio/prefix-130bpm.wav";
+constexpr const char* k_default_sim_rel = "tests/streamgen_slakh_test_audio/input-130bpm.wav";
 
-/// Walk parents of `manifest_path` until `tests/streamgen_test_audio/` exists (repo layout).
+/// Walk parents of `manifest_path` until a known streamgen test audio dir exists (repo layout).
 juce::File find_repo_root_with_streamgen_tests(const juce::File& manifest_path)
 {
     juce::File start(manifest_path.getFullPathName());
@@ -19,8 +19,9 @@ juce::File find_repo_root_with_streamgen_tests(const juce::File& manifest_path)
         start = start.getParentDirectory();
     for (int depth = 0; depth < 40; ++depth)
     {
-        const juce::File test_audio_dir = start.getChildFile("tests/streamgen_test_audio");
-        if (test_audio_dir.isDirectory())
+        const juce::File generic_tests = start.getChildFile("tests/streamgen_test_audio");
+        const juce::File slakh_tests = start.getChildFile("tests/streamgen_slakh_test_audio");
+        if (generic_tests.isDirectory() || slakh_tests.isDirectory())
             return start;
         const juce::File parent = start.getParentDirectory();
         if (parent == start)
@@ -44,9 +45,9 @@ StreamGenComponent::StreamGenComponent(
     m_title_label.setFont(juce::Font(title_options));
     addAndMakeVisible(m_title_label);
 
-    m_sax_waveform.set_label("SAX INPUT");
+    m_streamgen_audio_waveform.set_label("STREAMGEN AUDIO");
     m_drums_waveform.set_label("DRUMS OUTPUT");
-    addAndMakeVisible(m_sax_waveform);
+    addAndMakeVisible(m_streamgen_audio_waveform);
     addAndMakeVisible(m_drums_waveform);
     addAndMakeVisible(m_stage_timing);
     addAndMakeVisible(m_gen_status);
@@ -75,7 +76,13 @@ StreamGenComponent::StreamGenComponent(
 
     m_controls.on_keep_ratio_changed = [this](float val)
     {
-        m_processor.scheduler().keep_ratio.store(val, std::memory_order_relaxed);
+        auto& sched = m_processor.scheduler();
+        sched.keep_ratio.store(val, std::memory_order_relaxed);
+        if (!sched.musical_time_enabled.load(std::memory_order_relaxed))
+        {
+            sched.sync_hop_seconds_to_keep_ratio();
+            m_controls.sync_hop_delay_controls_from_scheduler(sched);
+        }
     };
 
     m_controls.on_steps_changed = [this](int val)
@@ -178,9 +185,9 @@ StreamGenComponent::StreamGenComponent(
         streamgen_log("UI: generation_enabled=" + juce::String(enabled ? "true" : "false"));
     };
 
-    m_mixer.on_sax_gain_changed = [this](float val)
+    m_mixer.on_streamgen_audio_gain_changed = [this](float val)
     {
-        m_processor.sax_gain.store(val, std::memory_order_relaxed);
+        m_processor.streamgen_audio_gain.store(val, std::memory_order_relaxed);
     };
 
     m_mixer.on_drums_gain_changed = [this](float val)
@@ -233,6 +240,8 @@ void StreamGenComponent::load_pipeline(
     try_load_default_audio_from_repo(juce::File(manifest_path));
 
     reattach_audio_callback_after_pipeline_load();
+
+    m_controls.sync_hop_delay_controls_from_scheduler(m_processor.scheduler());
 
     m_worker->startThread(juce::Thread::Priority::high);
     DBG("StreamGenComponent: inference worker started");
@@ -318,7 +327,7 @@ void StreamGenComponent::resized()
     int available_height = bounds.getHeight();
     int waveform_height = std::max(waveform_min_height, available_height / 2);
 
-    m_sax_waveform.setBounds(bounds.removeFromTop(waveform_height));
+    m_streamgen_audio_waveform.setBounds(bounds.removeFromTop(waveform_height));
     m_drums_waveform.setBounds(bounds);
 }
 
@@ -349,7 +358,7 @@ void StreamGenComponent::timerCallback()
     const float visible_seconds = 30.0f;
     int visible_samples = static_cast<int>(visible_seconds * static_cast<float>(sr));
 
-    m_sax_waveform.set_visible_duration(visible_seconds);
+    m_streamgen_audio_waveform.set_visible_duration(visible_seconds);
     m_drums_waveform.set_visible_duration(visible_seconds);
 
     auto& sched = sched_for_timer;
@@ -357,7 +366,7 @@ void StreamGenComponent::timerCallback()
     const float bpm = sched.bpm.load(std::memory_order_relaxed);
     const int sig_n = sched.time_sig_numerator.load(std::memory_order_relaxed);
     const int sig_d = sched.time_sig_denominator.load(std::memory_order_relaxed);
-    m_sax_waveform.set_time_axis_for_paint(musical, bpm, sig_n, sig_d);
+    m_streamgen_audio_waveform.set_time_axis_for_paint(musical, bpm, sig_n, sig_d);
     m_drums_waveform.set_time_axis_for_paint(musical, bpm, sig_n, sig_d);
 
     const bool skip_timeline_tick = worker_busy && (ui_tick % 2 != 0);
@@ -373,14 +382,14 @@ void StreamGenComponent::timerCallback()
     // Waveforms: one bucket column per panel pixel (capped); ~30s window with playhead at
     // k_timeline_playhead_past_fraction (see GenerationTimelineStore.h).
     constexpr int k_waveform_buckets_max = 2048;
-    const int panel_w = juce::jmax(1, juce::jmin(m_sax_waveform.getWidth(), m_drums_waveform.getWidth()));
+    const int panel_w = juce::jmax(1, juce::jmin(m_streamgen_audio_waveform.getWidth(), m_drums_waveform.getWidth()));
     const int wave_w = juce::jmin(k_waveform_buckets_max, panel_w);
     if (wave_w != m_waveform_bucket_width)
     {
         m_waveform_bucket_width = wave_w;
         const size_t w = static_cast<size_t>(wave_w);
-        m_sax_wave_min.resize(w);
-        m_sax_wave_max.resize(w);
+        m_streamgen_audio_wave_min.resize(w);
+        m_streamgen_audio_wave_max.resize(w);
         m_drums_wave_min.resize(w);
         m_drums_wave_max.resize(w);
         m_drums_wave_warm_min.resize(w);
@@ -391,18 +400,18 @@ void StreamGenComponent::timerCallback()
         m_drums_wave_hold_max.resize(w);
     }
 
-    m_processor.fill_recent_input_waveform_buckets(
-        visible_samples, wave_w, m_sax_wave_min.data(), m_sax_wave_max.data());
-    m_sax_waveform.update(
-        m_sax_wave_min.data(),
-        m_sax_wave_max.data(),
+    m_processor.fill_recent_streamgen_audio_waveform_buckets(
+        visible_samples, wave_w, m_streamgen_audio_wave_min.data(), m_streamgen_audio_wave_max.data());
+    m_streamgen_audio_waveform.update(
+        m_streamgen_audio_wave_min.data(),
+        m_streamgen_audio_wave_max.data(),
         wave_w,
         abs_pos,
         sr,
         &m_timeline_paint_cache,
-        TimelineWaveRole::SaxInput);
+        TimelineWaveRole::StreamgenAudio);
 
-    m_processor.fill_recent_output_waveform_buckets(
+    m_processor.fill_recent_drums_output_waveform_buckets(
         visible_samples, wave_w, m_drums_wave_min.data(), m_drums_wave_max.data());
     m_processor.fill_recent_drums_source_buckets(
         visible_samples,
@@ -436,9 +445,9 @@ void StreamGenComponent::timerCallback()
 
     // Source tags
     if (m_processor.simulation_playing.load(std::memory_order_relaxed))
-        m_sax_waveform.set_source_tag("[SIM]");
+        m_streamgen_audio_waveform.set_source_tag("[SIM]");
     else
-        m_sax_waveform.set_source_tag("[LIVE]");
+        m_streamgen_audio_waveform.set_source_tag("[LIVE]");
 
     const bool drums_hold = m_processor.drums_output_from_last_gen_hold.load(std::memory_order_relaxed);
     juce::String drums_tag;
@@ -560,11 +569,11 @@ void StreamGenComponent::load_warmup_audio()
         });
 }
 
-void StreamGenComponent::apply_default_120bpm_grid_preset()
+void StreamGenComponent::apply_default_musical_grid_preset()
 {
     auto& sched = m_processor.scheduler();
     sched.musical_time_enabled.store(true, std::memory_order_relaxed);
-    sched.bpm.store(120.0f, std::memory_order_relaxed);
+    sched.bpm.store(kStreamGenDefaultBpm, std::memory_order_relaxed);
     sched.time_sig_numerator.store(4, std::memory_order_relaxed);
     sched.time_sig_denominator.store(4, std::memory_order_relaxed);
     if (sched.quantize_launch_beats.load(std::memory_order_relaxed) == 0)
@@ -579,7 +588,9 @@ void StreamGenComponent::apply_default_120bpm_grid_preset()
         m_processor.loop_last_generation.load(std::memory_order_relaxed));
     m_controls.sync_click_track_from_processor(m_processor);
     streamgen_log(
-        "default_120bpm_grid: musical=on bpm=120 sig=4/4 quant_launch="
+        "default_musical_grid: musical=on bpm="
+        + juce::String(kStreamGenDefaultBpm, 1)
+        + " sig=4/4 quant_launch="
         + juce::String(sched.quantize_launch_beats.load(std::memory_order_relaxed)));
 }
 
@@ -625,7 +636,7 @@ void StreamGenComponent::try_load_default_audio_from_repo(const juce::File& mani
         if (m_processor.load_simulation_file(sim_file))
         {
             loaded_any = true;
-            DBG("StreamGenComponent: default simulation sax loaded: " + sim_file.getFileName());
+            DBG("StreamGenComponent: default simulation file loaded: " + sim_file.getFileName());
             streamgen_log("default sim: " + sim_file.getFullPathName());
             if (m_simulation_window != nullptr)
                 m_simulation_window->sync_from_processor();
@@ -638,7 +649,7 @@ void StreamGenComponent::try_load_default_audio_from_repo(const juce::File& mani
     }
 
     if (loaded_any)
-        apply_default_120bpm_grid_preset();
+        apply_default_musical_grid_preset();
 }
 
 } // namespace streamgen

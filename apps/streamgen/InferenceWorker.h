@@ -27,7 +27,7 @@ class GenerationTimelineStore;
 /// and writes the result back with overlap-add crossfade.
 ///
 /// Thread-safety:
-///   - Reads from processor ring buffers (snapshot_input/snapshot_output)
+///   - Reads from processor (snapshot_streamgen_audio_for_vae / snapshot_input_audio_for_vae)
 ///   - Writes to processor output ring buffer (write_output)
 ///   - Reads/writes atomics shared with UI (prompt, timing, status)
 class InferenceWorker : public juce::Thread {

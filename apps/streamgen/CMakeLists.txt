@@ -6,7 +6,7 @@ juce_add_gui_app(StreamGenApp
     VERSION 0.1.0
     BUNDLE_ID "com.unsound.streamgen"
     MICROPHONE_PERMISSION_ENABLED TRUE
-    MICROPHONE_PERMISSION_TEXT "StreamGen needs microphone access for live saxophone input"
+    MICROPHONE_PERMISSION_TEXT "StreamGen needs microphone access for live streamgen_audio (mic) input"
 )
 
 target_sources(StreamGenApp PRIVATE
@@ -19,9 +19,9 @@ target_sources(StreamGenApp PRIVATE
     StreamGenComponent.cpp
     InferenceWorker.h
     InferenceWorker.cpp
+    PreVaeDebugDump.h
+    PreVaeDebugDump.cpp
     InferenceSnapshot.h
-    AudioThreadTelemetry.h
-    AudioThreadTelemetry.cpp
     GenerationScheduler.h
     GenerationScheduler.cpp
     GenerationTimelineStore.h
@@ -60,6 +60,32 @@ target_link_libraries(StreamGenApp PRIVATE
 )
 
 target_compile_definitions(StreamGenApp PRIVATE
+    JUCE_WEB_BROWSER=0
+    JUCE_USE_CURL=0
+)
+
+# Unit tests for StreamGenProcessor (no GUI, no Zenon pipeline)
+add_executable(StreamGenProcessorHoldTests
+    tests/StreamGenProcessorHoldTest.cpp
+    StreamGenProcessor.cpp
+    GenerationScheduler.cpp
+    GenerationTimelineStore.cpp
+)
+
+target_include_directories(StreamGenProcessorHoldTests PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}
+    ${CMAKE_CURRENT_SOURCE_DIR}/../layercake/core
+)
+
+target_link_libraries(StreamGenProcessorHoldTests PRIVATE
+    juce::juce_audio_basics
+    juce::juce_audio_devices
+    juce::juce_audio_formats
+    juce::juce_core
+    juce::juce_events
+)
+
+target_compile_definitions(StreamGenProcessorHoldTests PRIVATE
     JUCE_WEB_BROWSER=0
     JUCE_USE_CURL=0
 )

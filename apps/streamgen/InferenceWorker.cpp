@@ -1,4 +1,5 @@
 #include "InferenceWorker.h"
+#include "PreVaeDebugDump.h"
 #include "StreamGenDebugLog.h"
 #include "GenerationTimelineStore.h"
 
@@ -191,13 +192,20 @@ void InferenceWorker::process_job(const GenerationJob& job)
         streamgen_log("InferenceWorker::process_job id=" + juce::String(job.job_id) + " t5_cache=miss");
     }
 
-    // Snapshot sax audio (streamgen_audio) from input ring buffer
-    auto sax_audio = m_processor.snapshot_input(
+    auto streamgen_audio = m_processor.snapshot_streamgen_audio_for_vae(
         job.window_start_sample, job.window_length_samples());
 
-    // Snapshot previous drums (input_audio) from output ring buffer
-    auto drums_audio = m_processor.snapshot_output(
-        job.window_start_sample, job.window_length_samples());
+    auto input_audio = m_processor.snapshot_input_audio_for_vae(
+        job.window_start_sample,
+        job.window_length_samples(),
+        job.keep_end_sample);
+
+    dump_pre_vae_wavs_if_enabled(
+        job,
+        static_cast<double>(m_config.sample_rate),
+        m_processor.scheduler().effective_playback_rate_hz(),
+        streamgen_audio,
+        input_audio);
 
     // Run the pipeline
     std::vector<float> empty_latent;
@@ -205,10 +213,10 @@ void InferenceWorker::process_job(const GenerationJob& job)
         m_input_ids,
         m_attention_mask,
         job.seconds_total,
-        empty_latent,    // streamgen_latent (empty -> will VAE encode sax_audio)
-        empty_latent,    // input_latent (empty -> will VAE encode drums_audio)
-        sax_audio,       // streamgen_audio
-        drums_audio,     // input_audio
+        empty_latent,    // streamgen_latent (empty -> VAE encode streamgen_audio)
+        empty_latent,    // input_latent (empty -> VAE encode input_audio)
+        streamgen_audio, // Python / Zenon streamgen_audio
+        input_audio,     // Python / Zenon input_audio (drum inpaint stem)
         job.keep_ratio,
         static_cast<uint32_t>(job.job_id), // use job_id as seed for variety
         job.steps,
@@ -238,6 +246,12 @@ void InferenceWorker::process_job(const GenerationJob& job)
         }
     );
 
+    dump_zenon_pipeline_output_wav_if_enabled(
+        job,
+        static_cast<double>(m_config.sample_rate),
+        m_config.sample_size,
+        output);
+
     if (!reuse_t5)
     {
         m_cached_t5_masked = m_pipeline->last_masked_t5_embeddings();
@@ -265,6 +279,11 @@ void InferenceWorker::process_job(const GenerationJob& job)
         gen_audio[static_cast<size_t>(gen_samples + i)] = output[static_cast<size_t>(model_samples + keep_samples + i)];
     }
 
+    // Timeline completion before ring write so UI land intervals (`has_completed`, `gen_samples`) are
+    // visible before any thread observes new ring audio.
+    if (m_timeline != nullptr)
+        m_timeline->record_completed(job.job_id, job, total_ms, gen_samples);
+
     // Write to output ring buffer with crossfade
     int xfade = crossfade_samples.load(std::memory_order_relaxed);
     m_processor.write_output(gen_audio, job.output_start_sample(), gen_samples, xfade);
@@ -274,9 +293,6 @@ void InferenceWorker::process_job(const GenerationJob& job)
         + " xfade=" + juce::String(xfade)
         + " wall_ms=" + juce::String(total_ms, 1)
         + " abs_pos_now=" + juce::String(m_processor.scheduler().absolute_sample_pos()));
-
-    if (m_timeline != nullptr)
-        m_timeline->record_completed(job.job_id, job, total_ms, gen_samples);
 
     // Update timing + full snapshot for operator dashboard
     const auto& pipeline_timing = m_pipeline->timing();

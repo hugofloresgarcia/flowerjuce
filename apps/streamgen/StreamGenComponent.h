@@ -20,7 +20,7 @@ namespace streamgen {
 
 /// Main dashboard component for StreamGen Live.
 ///
-/// Composes all sub-components: two scrolling waveforms (sax + drums),
+/// Composes all sub-components: two scrolling waveforms (streamgen_audio + drums output),
 /// stage timing bars, generation status, controls, and mixer.
 /// Runs a timer to poll the processor and update the UI.
 class StreamGenComponent : public juce::Component,
@@ -57,8 +57,8 @@ private:
     void load_warmup_audio();
     void try_load_default_audio_from_repo(const juce::File& manifest_file);
 
-    /// Set scheduler + UI to 120 BPM / 4/4 musical grid when default repo test assets are loaded.
-    void apply_default_120bpm_grid_preset();
+    /// Set scheduler + UI to default BPM / 4/4 musical grid when default repo test assets are loaded.
+    void apply_default_musical_grid_preset();
 
     /// Re-register the processor with the device manager after pipeline load and recover if I/O is down.
     void reattach_audio_callback_after_pipeline_load();
@@ -70,7 +70,7 @@ private:
     juce::AudioDeviceManager& m_device_manager;
     std::unique_ptr<InferenceWorker> m_worker;
 
-    WaveformTimelineComponent m_sax_waveform;
+    WaveformTimelineComponent m_streamgen_audio_waveform;
     WaveformTimelineComponent m_drums_waveform;
     StageTimingComponent m_stage_timing;
     GenerationStatusComponent m_gen_status;
@@ -82,8 +82,8 @@ private:
     juce::Label m_title_label;
 
     std::vector<JobTimelineRecord> m_timeline_paint_cache;
-    std::vector<float> m_sax_wave_min;
-    std::vector<float> m_sax_wave_max;
+    std::vector<float> m_streamgen_audio_wave_min;
+    std::vector<float> m_streamgen_audio_wave_max;
     std::vector<float> m_drums_wave_min;
     std::vector<float> m_drums_wave_max;
     std::vector<float> m_drums_wave_warm_min;

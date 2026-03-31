@@ -24,9 +24,22 @@ float clamp_bpm(float v)
 void GenerationScheduler::configure(const ModelConstants& constants)
 {
     m_constants = constants;
+    sync_hop_seconds_to_keep_ratio();
     streamgen_log("scheduler configure: model_sr=" + juce::String(constants.sample_rate)
         + " sample_size=" + juce::String(constants.sample_size)
-        + " abs_pos=" + juce::String(m_absolute_sample_pos.load(std::memory_order_relaxed)));
+        + " abs_pos=" + juce::String(m_absolute_sample_pos.load(std::memory_order_relaxed))
+        + " hop_s=" + juce::String(hop_seconds.load(std::memory_order_relaxed), 3));
+}
+
+void GenerationScheduler::sync_hop_seconds_to_keep_ratio()
+{
+    const int sr = m_constants.sample_rate > 0 ? m_constants.sample_rate : 44100;
+    const double window_s =
+        static_cast<double>(m_constants.sample_size) / static_cast<double>(sr);
+    float kr = keep_ratio.load(std::memory_order_relaxed);
+    kr = juce::jlimit(0.0f, 0.999f, kr);
+    const double hop_s = window_s * (1.0 - static_cast<double>(kr));
+    hop_seconds.store(static_cast<float>(hop_s), std::memory_order_relaxed);
 }
 
 void GenerationScheduler::set_playback_sample_rate(int hz)

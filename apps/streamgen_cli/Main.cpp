@@ -1,26 +1,39 @@
 /// StreamGen CLI — headless batch streaming for testing on CUDA servers.
 ///
 /// Reuses StreamGenProcessor, InferenceWorker, and GenerationScheduler from the
-/// GUI app. Feeds input audio through the same ring buffers and generation logic
+/// GUI app. Feeds streamgen_audio through the same ring buffers and generation logic
 /// synchronously (no threads, no audio device).
 ///
 /// Usage:
-///   StreamGenCLI --manifest path/to/manifest.json --input sax.wav [options]
+///   StreamGenCLI --manifest path/to/manifest.json --input streamgen_audio.wav [options]
+///
+/// Audio timeline (matches Python `generate_streamgen_inpaint`):
+///   - `--input` is **`streamgen_audio`** (Python): decoded to mono, resampled to manifest
+///     `sample_rate`, then fed into `m_streamgen_audio_ring`. In CLI one tick = one model-rate sample.
+///   - `--warmup-audio` seeds **`input_audio`** (Python drum stem) where the drums ring + hold are silent.
+///     When warmup is loaded, its playback timeline is **end-aligned** with `--input`: the last session
+///     sample reads the end of the warmup file (looping), so streaming conditions on “future” drums.
+///   - Jobs snapshot `sample_size` playback-clock frames; the worker resamples to VAE rate. Missing
+///     streamgen_audio ring data is **zeros**.
 
 #include "StreamGenProcessor.h"
 #include "InferenceWorker.h"
 #include "TimeRuler.h"
+
+#include "sao_inference/ZenonPipelineConfig.h"
 
 #include <juce_audio_formats/juce_audio_formats.h>
 #include <juce_core/juce_core.h>
 
 #include <algorithm>
 #include <chrono>
+#include <cmath>
 #include <cstdint>
 #include <cstring>
 #include <fstream>
 #include <iostream>
 #include <string>
+#include <utility>
 #include <vector>
 
 static void write_wav(
@@ -70,18 +83,18 @@ static void write_wav(
     out.write(reinterpret_cast<const char*>(pcm.data()), data_size);
 }
 
-/// Load a WAV file as mono float using JUCE's AudioFormatReader.
+/// Load a WAV file as mono float at the file's native sample rate.
 ///
 /// Args:
 ///     path: Path to the WAV file.
 ///     format_manager: JUCE format manager with registered formats.
 ///
 /// Returns:
-///     Mono float vector at the file's native sample rate.
+///     `{ mono_samples, native_sample_rate_hz }`.
 ///
 /// Raises:
 ///     Asserts on failure.
-static std::vector<float> load_wav_mono(
+static std::pair<std::vector<float>, double> load_wav_mono_native_rate(
     const std::string& path,
     juce::AudioFormatManager& format_manager)
 {
@@ -110,10 +123,54 @@ static std::vector<float> load_wav_mono(
             mono[static_cast<size_t>(i)] = (left[i] + right[i]) * 0.5f;
     }
 
+    const double native_hz = reader->sampleRate > 0.0 ? static_cast<double>(reader->sampleRate) : 44100.0;
     std::cout << "  Loaded " << path << " (" << num_frames << " samples, "
               << reader->numChannels << "ch, "
-              << reader->sampleRate << " Hz)" << std::endl;
-    return mono;
+              << native_hz << " Hz native)" << std::endl;
+    return {std::move(mono), native_hz};
+}
+
+/// Linearly resample mono audio from source_hz to target_hz (same clock the model expects).
+///
+/// Args:
+///     input: Mono PCM at `source_hz`.
+///     source_hz: Input rate in Hz; must be > 0.
+///     target_hz: Manifest / VAE rate in Hz; must be > 0.
+///
+/// Returns:
+///     Mono PCM at `target_hz`. Empty if `input` is empty. Copy of `input` if rates match.
+static std::vector<float> resample_mono_linear(
+    const std::vector<float>& input,
+    double source_hz,
+    double target_hz)
+{
+    assert(source_hz > 0.0 && target_hz > 0.0);
+    if (input.empty())
+        return {};
+    if (std::abs(source_hz - target_hz) < 1.0e-3)
+        return input;
+
+    const double ratio = source_hz / target_hz;
+    const auto out_len = static_cast<size_t>(std::max(
+        1.0,
+        std::ceil(static_cast<double>(input.size()) / ratio)));
+    std::vector<float> output(out_len);
+    const size_t last_in = input.size() - 1u;
+
+    for (size_t j = 0; j < out_len; ++j)
+    {
+        const double src_f = static_cast<double>(j) * ratio;
+        const auto i0 = static_cast<size_t>(std::floor(src_f));
+        const float frac = static_cast<float>(src_f - std::floor(src_f));
+        if (i0 >= last_in)
+            output[j] = input[last_in];
+        else
+            output[j] = input[i0] * (1.0f - frac) + input[i0 + 1u] * frac;
+    }
+
+    std::cout << "  Resampled mono: " << input.size() << " @ " << source_hz << " Hz -> "
+              << output.size() << " @ " << target_hz << " Hz" << std::endl;
+    return output;
 }
 
 struct TimingEntry {
@@ -187,12 +244,12 @@ static void print_usage(const char* prog)
 {
     std::cerr << "Usage: " << prog << " [options]\n"
               << "  --manifest FILE          Path to zenon_pipeline_manifest.json (REQUIRED)\n"
-              << "  --input FILE             Input sax/synth WAV file (REQUIRED)\n"
+              << "  --input FILE             streamgen_audio WAV (Python streamgen_audio) (REQUIRED)\n"
               << "  --warmup-audio FILE      Warmup-audio drums WAV\n"
               << "  --output FILE            Output drums WAV (default: output_streamgen.wav)\n"
               << "  --timing-json FILE       Write per-generation timing JSON\n"
               << "  --prompt TEXT             Text prompt (default: percussion)\n"
-              << "  --hop SECONDS            Hop size in seconds (default: 3.0)\n"
+              << "  --hop SECONDS            Override hop (default: model window * (1 - keep ratio))\n"
               << "  --keep-ratio FLOAT       Inpaint keep ratio 0.0-1.0 (default: 0.5)\n"
               << "  --steps N                Sampling steps (default: 8)\n"
               << "  --cfg SCALE              CFG scale (default: 7.0)\n"
@@ -214,7 +271,8 @@ int main(int argc, char* argv[])
     std::string output_file = "output_streamgen.wav";
     std::string timing_json_file;
     std::string prompt = "percussion";
-    float hop_seconds = 3.0f;
+    bool hop_explicit = false;
+    float hop_override_seconds = 0.0f;
     float keep_ratio = 0.5f;
     int steps = 8;
     float cfg_scale = 7.0f;
@@ -234,7 +292,11 @@ int main(int argc, char* argv[])
         else if (arg == "--output" && i + 1 < argc) output_file = argv[++i];
         else if (arg == "--timing-json" && i + 1 < argc) timing_json_file = argv[++i];
         else if (arg == "--prompt" && i + 1 < argc) prompt = argv[++i];
-        else if (arg == "--hop" && i + 1 < argc) hop_seconds = std::stof(argv[++i]);
+        else if (arg == "--hop" && i + 1 < argc)
+        {
+            hop_explicit = true;
+            hop_override_seconds = std::stof(argv[++i]);
+        }
         else if (arg == "--keep-ratio" && i + 1 < argc) keep_ratio = std::stof(argv[++i]);
         else if (arg == "--steps" && i + 1 < argc) steps = std::stoi(argv[++i]);
         else if (arg == "--cfg" && i + 1 < argc) cfg_scale = std::stof(argv[++i]);
@@ -252,22 +314,30 @@ int main(int argc, char* argv[])
     assert(!manifest_path.empty() && "Must provide --manifest");
     assert(!input_file.empty() && "Must provide --input");
 
+    sao::ZenonPipelineConfig zen_config = sao::ZenonPipelineConfig::load(manifest_path);
+    const int model_sample_rate = zen_config.sample_rate;
+
     std::cout << "=== StreamGen CLI ===" << std::endl;
     std::cout << "Manifest: " << manifest_path << std::endl;
     std::cout << "Input:    " << input_file << std::endl;
     std::cout << "Output:   " << output_file << std::endl;
+    std::cout << "Model SR: " << model_sample_rate << " Hz" << std::endl;
     std::cout << "Prompt:   " << prompt << std::endl;
-    std::cout << "Hop: " << hop_seconds << "s, Keep: " << keep_ratio
-              << ", Steps: " << steps << ", CFG: " << cfg_scale
+    std::cout << "Keep: " << keep_ratio << ", Steps: " << steps << ", CFG: " << cfg_scale
               << ", Schedule delay: " << schedule_delay_seconds << "s" << std::endl;
 
-    // --- Load input audio ---
+    // --- Load input audio and resample to manifest sample_rate (VAE + ring timeline) ---
     juce::AudioFormatManager format_manager;
     format_manager.registerBasicFormats();
 
-    std::vector<float> input_mono = load_wav_mono(input_file, format_manager);
+    auto mono_native = load_wav_mono_native_rate(input_file, format_manager);
+    std::vector<float> input_mono = resample_mono_linear(
+        mono_native.first,
+        mono_native.second,
+        static_cast<double>(model_sample_rate));
     int64_t total_input_samples = static_cast<int64_t>(input_mono.size());
-    double input_duration_s = static_cast<double>(total_input_samples) / 44100.0;
+    double input_duration_s = static_cast<double>(total_input_samples)
+        / static_cast<double>(model_sample_rate);
 
     // --- Set up processor and worker ---
     streamgen::StreamGenProcessor processor;
@@ -277,14 +347,20 @@ int main(int argc, char* argv[])
     worker.set_prompt(prompt);
 
     auto& scheduler = processor.scheduler();
-    scheduler.hop_seconds.store(hop_seconds, std::memory_order_relaxed);
     scheduler.keep_ratio.store(keep_ratio, std::memory_order_relaxed);
+    if (hop_explicit)
+        scheduler.hop_seconds.store(hop_override_seconds, std::memory_order_relaxed);
+    else
+        scheduler.sync_hop_seconds_to_keep_ratio();
     scheduler.steps.store(steps, std::memory_order_relaxed);
     scheduler.cfg_scale.store(cfg_scale, std::memory_order_relaxed);
     scheduler.schedule_delay_seconds.store(schedule_delay_seconds, std::memory_order_relaxed);
     scheduler.generation_enabled.store(true, std::memory_order_relaxed);
 
-    int crossfade_samples = crossfade_ms * 44100 / 1000;
+    std::cout << "Hop:      " << scheduler.hop_seconds.load(std::memory_order_relaxed) << "s"
+              << (hop_explicit ? " (--hop)" : " (window*(1-keep))") << std::endl;
+
+    const int crossfade_samples = crossfade_ms * model_sample_rate / 1000;
     worker.crossfade_samples.store(crossfade_samples, std::memory_order_relaxed);
 
     // --- Load warmup audio (optional) ---
@@ -293,7 +369,9 @@ int main(int argc, char* argv[])
         juce::File ws_file(warmup_audio_file);
         assert(ws_file.existsAsFile() && "Warmup audio file not found");
         processor.load_warmup_audio(ws_file);
-        std::cout << "Warmup audio loaded: " << warmup_audio_file << std::endl;
+        processor.set_streamgen_session_total_samples_for_warmup_end_align(total_input_samples);
+        std::cout << "Warmup audio loaded: " << warmup_audio_file
+                  << " (end-aligned with input, " << total_input_samples << " samples)" << std::endl;
     }
 
     // --- Streaming loop ---
@@ -309,7 +387,7 @@ int main(int argc, char* argv[])
     {
         int64_t remaining = total_input_samples - pos;
         int chunk = static_cast<int>(std::min(static_cast<int64_t>(BLOCK_SIZE), remaining));
-        processor.feed_audio(&input_mono[static_cast<size_t>(pos)], chunk);
+        processor.feed_streamgen_audio(&input_mono[static_cast<size_t>(pos)], chunk);
         pos += chunk;
 
         streamgen::GenerationJob job;
@@ -345,20 +423,21 @@ int main(int argc, char* argv[])
 
     // --- Extract output from ring buffer ---
     int64_t output_samples = total_input_samples;
-    auto output_waveform = processor.snapshot_output(0, output_samples);
+    auto output_waveform = processor.snapshot_drums_output(0, output_samples);
 
     // output_waveform is row-major (2, N)
     constexpr int NUM_CHANNELS = 2;
     int num_output_samples = static_cast<int>(output_samples);
 
     std::cout << "Writing " << num_output_samples << " samples to " << output_file << std::endl;
-    write_wav(output_file, output_waveform, 44100, NUM_CHANNELS, num_output_samples);
+    write_wav(output_file, output_waveform, model_sample_rate, NUM_CHANNELS, num_output_samples);
 
     // --- Timing JSON ---
     if (!timing_json_file.empty())
     {
         write_timing_json(timing_json_file, timing_entries,
-                          hop_seconds, keep_ratio, steps, cfg_scale, schedule_delay_seconds,
+                          scheduler.hop_seconds.load(std::memory_order_relaxed),
+                          keep_ratio, steps, cfg_scale, schedule_delay_seconds,
                           prompt, input_file, input_duration_s);
         std::cout << "Timing report written to " << timing_json_file << std::endl;
     }

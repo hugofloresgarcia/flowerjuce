@@ -3,7 +3,6 @@
 #include "TimeRuler.h"
 #include "GenerationScheduler.h"
 #include "GenerationTimelineStore.h"
-#include "AudioThreadTelemetry.h"
 
 #include <juce_audio_devices/juce_audio_devices.h>
 #include <juce_audio_formats/juce_audio_formats.h>
@@ -25,13 +24,14 @@ struct DrumsRingSample {
 
 /// Audio engine for StreamGen Live.
 ///
-/// Owns the dual ring buffers (sax input + drums output), drives the audio
-/// callback, and provides thread-safe access for the inference worker to
-/// snapshot input and write output.
+/// Owns the dual ring buffers (**Python `streamgen_audio`** ring + generated **drums** ring),
+/// drives the audio callback, and provides thread-safe access for the inference worker to
+/// snapshot conditioning audio and write generated drums.
 ///
 /// Threading contract:
 ///   - Audio thread calls audio_device_callback()
-///   - Worker thread calls snapshot_input(), snapshot_output(), write_output()
+///   - Worker thread calls snapshot_streamgen_audio_for_vae(), snapshot_input_audio_for_vae(),
+///     write_output(); raw ring snapshots remain for UI / CLI export
 ///   - UI thread reads waveform buckets via fill_recent_*_waveform_buckets() and atomics
 class StreamGenProcessor : public juce::AudioIODeviceCallback {
 public:
@@ -42,7 +42,7 @@ public:
     ~StreamGenProcessor() override;
 
     /// Clear timeline history, reset scheduler sample position and job queue, zero I/O rings,
-    /// stop simulation playback and rewind transports, and reset audio telemetry.
+    /// and stop simulation playback and rewind transports.
     ///
     /// The audio callback must not be running (call after removeAudioCallback). The inference
     /// worker thread should be stopped so no job completes after this reset.
@@ -99,9 +99,11 @@ public:
 
     // --- Warmup audio ---
 
-    /// Load a WAV file as the warmup-audio drum track. Timeline positions use the **device** sample
-    /// clock (same as the metronome); file frames are indexed with `timeline * file_sr / device_sr`
-    /// so 120 BPM content authored at 44100 Hz stays on-grid when the interface runs at 48 kHz.
+    /// Load a WAV file as the **drum** warmup stem (Python `input_audio`-style inpaint prefix).
+    /// Used for monitoring on the main bus and, during inference, to fill DiT/VAE drum conditioning
+    /// wherever the drums output ring and last-gen hold are still silent. Native file rate is preserved;
+    /// resampling to the playback timeline matches `timeline * file_sr / playback_sr` (same as speaker path),
+    /// then the worker resamples to the model/VAE rate when snapshotting.
     ///
     /// Args:
     ///     file: The WAV file to load.
@@ -134,27 +136,24 @@ public:
 
     // --- Worker thread interface ---
 
-    /// Snapshot the most recent model_window_samples of sax input from the ring buffer.
-    /// Called from the worker thread.
-    ///
-    /// Args:
-    ///     window_start: Absolute sample position for the start of the snapshot.
-    ///     num_samples: Number of samples to snapshot.
-    ///
-    /// Returns:
-    ///     Stereo audio in row-major (2, num_samples) layout, or empty if not enough data.
-    std::vector<float> snapshot_input(int64_t window_start, int64_t num_samples);
+    /// Snapshot **`streamgen_audio`** ring only (playback clock), row-major stereo — Zenon `streamgen_audio` **before** model-rate resample.
+    std::vector<float> snapshot_streamgen_audio(int64_t window_start, int64_t num_samples);
 
-    /// Snapshot the most recent drums output from the ring buffer.
-    /// Called from the worker thread.
-    ///
-    /// Args:
-    ///     window_start: Absolute sample position for the start of the snapshot.
-    ///     num_samples: Number of samples to snapshot.
-    ///
-    /// Returns:
-    ///     Stereo audio in row-major (2, num_samples) layout, or empty if not enough data.
-    std::vector<float> snapshot_output(int64_t window_start, int64_t num_samples);
+    /// Snapshot **generated drums** ring only (playback clock) — not Python `input_audio` (use `snapshot_input_audio_for_vae`).
+    std::vector<float> snapshot_drums_output(int64_t window_start, int64_t num_samples);
+
+    /// **`streamgen_audio`** for VAE (`prepare_audio`-equivalent): playback-clock window from `snapshot_streamgen_audio`, then resampled to `m_constants.sample_rate`.
+    std::vector<float> snapshot_streamgen_audio_for_vae(int64_t window_start, int64_t num_samples);
+
+    /// **`input_audio`** for VAE (drum inpaint stem; Python `input_audio_tensor`): for timeline indices
+    /// in `[window_start, keep_end_sample)` only — ring + last-gen hold, else warmup when silent; samples
+    /// at `abs_sample >= keep_end_sample` are **zeros** (no future drum conditioning). Resampled to
+    /// `m_constants.sample_rate`. `keep_end_sample` is the same boundary as `GenerationJob::keep_end_sample`
+    /// (first sample of the generated suffix in playback time).
+    std::vector<float> snapshot_input_audio_for_vae(
+        int64_t window_start,
+        int64_t num_samples,
+        int64_t keep_end_sample);
 
     /// Write generated audio into the output ring buffer with overlap-add crossfade.
     /// Called from the worker thread.
@@ -179,13 +178,13 @@ public:
     ///     num_buckets: Typically component width in logical pixels (one column per bucket).
     ///     out_min: Receives minimum sample per bucket.
     ///     out_max: Receives maximum sample per bucket.
-    void fill_recent_input_waveform_buckets(int duration_samples, int num_buckets, float* out_min, float* out_max);
+    void fill_recent_streamgen_audio_waveform_buckets(int duration_samples, int num_buckets, float* out_min, float* out_max);
 
-    /// Same as fill_recent_input_waveform_buckets for the drums monitor ring (stereo downmixed to mono).
-    void fill_recent_output_waveform_buckets(int duration_samples, int num_buckets, float* out_min, float* out_max);
+    /// Same as fill_recent_streamgen_audio_waveform_buckets for the **drums output / monitor** ring (stereo downmixed to mono).
+    void fill_recent_drums_output_waveform_buckets(int duration_samples, int num_buckets, float* out_min, float* out_max);
 
     /// Drums monitor split by source: warmup (1), model from ring (2), loop-hold snapshot (3); see m_drums_origin_ring.
-    /// Arrays must hold num_buckets elements. Same visible window as fill_recent_output_waveform_buckets.
+    /// Arrays must hold num_buckets elements. Same visible window as fill_recent_drums_output_waveform_buckets.
     /// When gen_land_jobs is non-null and non-empty, samples with origin gen are bucketed only if they fall inside a
     /// completed job land interval [output_start_sample(), output_start_sample() + gen_samples); otherwise they
     /// are omitted from gen (and hold/warm buckets) so the cyan trace aligns with scheduled lands.
@@ -204,16 +203,11 @@ public:
     void clear_drums_output_buffers();
 
     // --- Gain controls ---
-    std::atomic<float> sax_gain{1.0f};
+    std::atomic<float> streamgen_audio_gain{0.0f};
     std::atomic<float> drums_gain{1.0f};
 
-    /// Feed mono audio directly into the input ring buffer and advance the
-    /// scheduler. Used by the CLI to bypass the audio device callback.
-    ///
-    /// Args:
-    ///     mono_input: Mono audio samples.
-    ///     num_samples: Number of samples to feed.
-    void feed_audio(const float* mono_input, int num_samples);
+    /// Feed mono **`streamgen_audio`** into `m_streamgen_audio_ring` and advance the scheduler (CLI / tests).
+    void feed_streamgen_audio(const float* mono_input, int num_samples);
 
     GenerationScheduler& scheduler() { return m_scheduler; }
     const ModelConstants& constants() const { return m_constants; }
@@ -225,21 +219,28 @@ public:
     /// Native sample rate of the loaded warmup-audio WAV (Hz).
     int warmup_audio_file_native_sample_rate_hz() const;
 
-    /// RT-safe audio levels; read from UI/logger threads via copy_snapshot().
-    AudioThreadTelemetry& audio_telemetry() { return m_audio_telemetry; }
-    const AudioThreadTelemetry& audio_telemetry() const { return m_audio_telemetry; }
+    /// Shift the drum warmup stem on the playback timeline so the last session sample reads the end of
+    /// the warmup file (looping). `total_streamgen_samples` is the **streamgen_audio** session length in
+    /// playback-clock samples (CLI: resampled `--input` length). `0` restores start-aligned warmup (default).
+    ///
+    /// Args:
+    ///     total_streamgen_samples: Session span in samples; `0` disables end-alignment.
+    void set_streamgen_session_total_samples_for_warmup_end_align(int64_t total_streamgen_samples);
 
     /// Timeline history for generation markers (UI). Null before construction completes.
     GenerationTimelineStore* timeline_store() { return m_timeline.get(); }
     const GenerationTimelineStore* timeline_store() const { return m_timeline.get(); }
 
+    /// Drums output at `absolute_sample`: raw ring, or last-gen loop hold when the ring is silent and
+    /// loop-last-gen is on. Hold never substitutes before `output_start_sample` of the committed snapshot.
+    DrumsRingSample fetch_drums_ring_sample(int64_t absolute_sample) const;
+
 private:
     void rebuild_ring_buffers(int ring_sample_rate);
-    void write_sax_to_ring(const float* mono_input, int num_samples);
-    void write_sax_to_ring_at(const float* mono_input, int num_samples, int64_t abs_block_start);
+    void write_streamgen_audio_to_ring(const float* mono_input, int num_samples);
+    void write_streamgen_audio_to_ring_at(const float* mono_input, int num_samples, int64_t abs_block_start);
     void read_drums_from_ring(float* left, float* right, int num_samples);
     void output_ring_sample_at(int64_t absolute_sample, float& out_left, float& out_right) const;
-    DrumsRingSample fetch_drums_ring_sample(int64_t absolute_sample) const;
     void commit_last_generation_snapshot(
         const std::vector<float>& gen_row_major_stereo,
         int64_t output_start_sample,
@@ -252,14 +253,15 @@ private:
     ModelConstants m_constants;
     std::unique_ptr<GenerationTimelineStore> m_timeline;
     GenerationScheduler m_scheduler;
-    AudioThreadTelemetry m_audio_telemetry;
     int m_current_sample_rate = 44100;
 
     // Ring buffers: interleaved [L, R, L, R, ...] for simplicity
     // Indexed by absolute_sample_pos % ring_buffer_size
     int m_ring_buffer_size = 0; // in frames (one frame = NUM_CHANNELS samples)
-    std::vector<float> m_input_ring;   // sax input (stereo, duplicated from mono)
-    std::vector<float> m_output_ring;  // generated drums (worker writes; warm path reads only)
+    /// Python `streamgen_audio` timeline (stereo duplicated from mono).
+    std::vector<float> m_streamgen_audio_ring;
+    /// Generated **drums** bus (model output); warmup/monitor read via `fetch_drums_ring_sample`.
+    std::vector<float> m_drums_output_ring;
     /// Last drum bus (pre-drums_gain) for UI waveform — audio thread only, never touched by worker.
     std::vector<float> m_drums_monitor_ring;
     /// Per ring frame: 0 = silence, 1 = warmup file, 2 = model from ring, 3 = loop-last hold snapshot. Audio thread only.
@@ -277,6 +279,8 @@ private:
     std::vector<float> m_warm_audio;
     int64_t m_warm_length_frames = 0;
     std::atomic<int> m_warm_native_sample_rate_hz{44100};
+    /// When > 0, warmup file index uses `session_timeline + (warm_playback_span - this)` (see setter).
+    std::atomic<int64_t> m_streamgen_session_total_samples_for_warmup_end_align{0};
 
     /// Grows in audioDeviceAboutToStart to max block size; simulation path fills then single ring write.
     std::vector<float> m_sim_callback_scratch;

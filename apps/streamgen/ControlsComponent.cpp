@@ -1,4 +1,5 @@
 #include "ControlsComponent.h"
+#include "MusicalTime.h"
 #include "StreamGenProcessor.h"
 #include "LayerCakeLookAndFeel.h"
 
@@ -133,7 +134,7 @@ ControlsComponent::ControlsComponent()
     addAndMakeVisible(m_bpm_label);
 
     m_bpm_slider.setRange(20.0, 400.0, 0.5);
-    m_bpm_slider.setValue(120.0);
+    m_bpm_slider.setValue(static_cast<double>(kStreamGenDefaultBpm));
     m_bpm_slider.setTextBoxStyle(juce::Slider::TextBoxRight, false, 52, 20);
     m_bpm_slider.onValueChange = [this]()
     {
@@ -181,8 +182,8 @@ ControlsComponent::ControlsComponent()
     m_hop_label.setText("Hop (s):", juce::dontSendNotification);
     addAndMakeVisible(m_hop_label);
 
-    m_hop_slider.setRange(0.5, 10.0, 0.1);
-    m_hop_slider.setValue(3.0);
+    m_hop_slider.setRange(0.5, 15.0, 0.1);
+    m_hop_slider.setValue(6.0);
     m_hop_slider.setTextBoxStyle(juce::Slider::TextBoxRight, false, 50, 20);
     m_hop_slider.onValueChange = [this]()
     {
@@ -452,7 +453,7 @@ void ControlsComponent::sync_hop_delay_controls_from_scheduler(const GenerationS
     }
     else
     {
-        m_hop_slider.setRange(0.5, 10.0, 0.1);
+        m_hop_slider.setRange(0.5, 15.0, 0.1);
         m_hop_slider.setValue(static_cast<double>(sched.hop_seconds.load(std::memory_order_relaxed)),
                               juce::dontSendNotification);
         m_schedule_delay_slider.setRange(0.0, 30.0, 0.25);

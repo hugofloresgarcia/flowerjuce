@@ -7,9 +7,9 @@
 
 namespace streamgen {
 
-/// Pop-up window for loading and playing a saxophone simulation WAV file.
+/// Pop-up window for loading and playing a streamgen_audio simulation WAV (Python `streamgen_audio` source).
 ///
-/// Streams the loaded audio into the input ring buffer at real-time rate,
+/// Streams the loaded audio into the **streamgen_audio** ring at real-time rate,
 /// replacing live mic input. Provides transport controls and speed multiplier.
 class SimulationPanel : public juce::Component,
                         private juce::Timer {

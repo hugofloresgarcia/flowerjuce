@@ -6,6 +6,9 @@
 
 namespace streamgen {
 
+/// Default session BPM (UI + scheduler); matches bundled Slakh test clips.
+inline constexpr float kStreamGenDefaultBpm = 130.0f;
+
 /// Musical time helpers: one beat = one quarter note at `bpm`. Beat 0 aligns with sample 0.
 
 /// Args:
