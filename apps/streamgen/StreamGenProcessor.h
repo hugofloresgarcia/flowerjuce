@@ -92,8 +92,9 @@ public:
 
     // --- Warm-start ---
 
-    /// Load a WAV file as the warm-start drum track. Playback index is absolute_sample_pos %
-    /// file_length (stereo frame = one L,R pair). WAV sample 0 aligns with timeline sample 0.
+    /// Load a WAV file as the warm-start drum track. Timeline positions use the **device** sample
+    /// clock (same as the metronome); file frames are indexed with `timeline * file_sr / device_sr`
+    /// so 120 BPM content authored at 44100 Hz stays on-grid when the interface runs at 48 kHz.
     ///
     /// Args:
     ///     file: The WAV file to load.
@@ -198,6 +199,12 @@ public:
     const ModelConstants& constants() const { return m_constants; }
     int current_sample_rate() const { return m_current_sample_rate; }
 
+    /// Native sample rate of the loaded simulation WAV (Hz), for UI time/bar readouts.
+    int simulation_file_native_sample_rate_hz() const;
+
+    /// Native sample rate of the loaded warm-start WAV (Hz).
+    int warm_file_native_sample_rate_hz() const;
+
     /// RT-safe audio levels; read from UI/logger threads via copy_snapshot().
     AudioThreadTelemetry& audio_telemetry() { return m_audio_telemetry; }
     const AudioThreadTelemetry& audio_telemetry() const { return m_audio_telemetry; }
@@ -209,6 +216,7 @@ public:
 private:
     void rebuild_ring_buffers(int ring_sample_rate);
     void write_sax_to_ring(const float* mono_input, int num_samples);
+    void write_sax_to_ring_at(const float* mono_input, int num_samples, int64_t abs_block_start);
     void read_drums_from_ring(float* left, float* right, int num_samples);
     void output_ring_sample_at(int64_t absolute_sample, float& out_left, float& out_right) const;
     void commit_last_generation_snapshot(
@@ -236,16 +244,21 @@ private:
     /// Per ring frame: 0 = silence, 1 = warm-start file, 2 = model (output_ring). Audio thread writes only.
     std::vector<uint8_t> m_drums_origin_ring;
 
-    // Simulation file data (mono, 44100 Hz, loaded on UI thread)
+    // Simulation file data (mono at native file rate). Phase keeps scrub offset vs timeline.
     std::mutex m_sim_mutex;
     std::vector<float> m_sim_audio;
-    double m_sim_playback_pos = 0.0;
+    double m_sim_file_phase = 0.0;
+    std::atomic<int> m_sim_native_sample_rate_hz{44100};
     juce::String m_simulation_display_name;
 
-    // Warm-start data (stereo interleaved)
+    // Warm-start data (stereo interleaved at native file rate)
     mutable std::mutex m_warm_mutex;
     std::vector<float> m_warm_audio;
     int64_t m_warm_length_frames = 0;
+    std::atomic<int> m_warm_native_sample_rate_hz{44100};
+
+    /// Grows in audioDeviceAboutToStart to max block size; simulation path fills then single ring write.
+    std::vector<float> m_sim_callback_scratch;
 
     /// Last completed generation (row-major stereo: [L...][R...]), for loop-hold when ring is silent.
     mutable std::mutex m_last_gen_mutex;

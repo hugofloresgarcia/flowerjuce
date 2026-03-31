@@ -152,9 +152,9 @@ void SimulationPanel::timerCallback()
         const double frac = static_cast<double>(pos) / static_cast<double>(total);
         m_position_slider.setValue(frac, juce::dontSendNotification);
 
-        const int sr = m_processor.current_sample_rate();
-        juce::String pos_str = juce::String(format_time(pos, sr))
-            + " / " + juce::String(format_time(total, sr));
+        const int sr_file = m_processor.simulation_file_native_sample_rate_hz();
+        juce::String pos_str = juce::String(format_time(pos, sr_file))
+            + " / " + juce::String(format_time(total, sr_file));
 
         const auto& sched = m_processor.scheduler();
         if (sched.musical_time_enabled.load(std::memory_order_relaxed))
@@ -163,7 +163,7 @@ void SimulationPanel::timerCallback()
             const int bpb = juce::jmax(1, sched.time_sig_numerator.load(std::memory_order_relaxed));
             const double bpm_d = static_cast<double>(juce::jlimit(20.0f, 400.0f, bpm));
             pos_str += "  ";
-            pos_str += juce::String(format_bar_beat(pos, sr, bpm_d, bpb));
+            pos_str += juce::String(format_bar_beat(pos, sr_file, bpm_d, bpb));
         }
 
         m_position_label.setText(pos_str, juce::dontSendNotification);

@@ -20,6 +20,47 @@ constexpr std::uint8_t k_drums_origin_none = 0;
 constexpr std::uint8_t k_drums_origin_warm = 1;
 constexpr std::uint8_t k_drums_origin_gen = 2;
 
+inline int effective_device_hz(int current_sr, int model_sr)
+{
+    return current_sr > 0 ? current_sr : juce::jmax(1, model_sr);
+}
+
+/// Map timeline sample (device clock) to a fractional index in file space; `native_len` is frames.
+inline void warm_timeline_to_stereo_linear(
+    const std::vector<float>& warm,
+    int64_t native_len,
+    double file_hz,
+    double dev_hz,
+    int64_t timeline_sample,
+    float& out_l,
+    float& out_r)
+{
+    if (native_len <= 0 || file_hz <= 0.0 || dev_hz <= 0.0)
+    {
+        out_l = 0.0f;
+        out_r = 0.0f;
+        return;
+    }
+    const double idx_f = static_cast<double>(timeline_sample) * (file_hz / dev_hz);
+    const double fl = std::floor(idx_f);
+    const float frac = static_cast<float>(idx_f - fl);
+    int64_t i0 = static_cast<int64_t>(fl) % native_len;
+    if (i0 < 0)
+        i0 += native_len;
+    int64_t i1 = i0 + 1;
+    i1 %= native_len;
+    if (i1 < 0)
+        i1 += native_len;
+    const size_t b0 = static_cast<size_t>(i0) * static_cast<size_t>(StreamGenProcessor::NUM_CHANNELS);
+    const size_t b1 = static_cast<size_t>(i1) * static_cast<size_t>(StreamGenProcessor::NUM_CHANNELS);
+    const float l0 = warm[b0];
+    const float r0 = warm[b0 + 1u];
+    const float l1 = warm[b1];
+    const float r1 = warm[b1 + 1u];
+    out_l = l0 * (1.0f - frac) + l1 * frac;
+    out_r = r0 * (1.0f - frac) + r1 * frac;
+}
+
 } // namespace
 
 StreamGenProcessor::StreamGenProcessor()
@@ -66,7 +107,7 @@ void StreamGenProcessor::reset_timeline_and_transport()
     simulation_position.store(0, std::memory_order_relaxed);
     {
         std::lock_guard<std::mutex> lock(m_sim_mutex);
-        m_sim_playback_pos = 0.0;
+        m_sim_file_phase = 0.0;
     }
 
     {
@@ -102,6 +143,12 @@ void StreamGenProcessor::audioDeviceAboutToStart(juce::AudioIODevice* device)
     m_scheduler.set_playback_sample_rate(m_current_sample_rate);
     rebuild_ring_buffers(m_current_sample_rate);
     rebuild_click_impulses();
+    {
+        const int blocksz = device != nullptr ? device->getCurrentBufferSizeSamples() : 0;
+        const size_t cap = static_cast<size_t>(juce::jmax(1024, blocksz));
+        if (m_sim_callback_scratch.size() < cap)
+            m_sim_callback_scratch.assign(cap, 0.0f);
+    }
     DBG("StreamGenProcessor: audio device starting, sample_rate=" + juce::String(m_current_sample_rate));
     juce::String io_name = device != nullptr ? device->getName() : juce::String("<null>");
     streamgen_log("audioDeviceAboutToStart: device=" + io_name
@@ -151,12 +198,12 @@ void StreamGenProcessor::audioDeviceIOCallbackWithContext(
                 static_cast<long long>(pos_block_start),
                 num_samples));
             float zeros[2048] = {};
-            int remaining = num_samples;
-            while (remaining > 0)
+            int written = 0;
+            while (written < num_samples)
             {
-                int chunk = std::min(remaining, 2048);
-                write_sax_to_ring(zeros, chunk);
-                remaining -= chunk;
+                int chunk = std::min(num_samples - written, 2048);
+                write_sax_to_ring_at(zeros, chunk, pos_block_start + static_cast<int64_t>(written));
+                written += chunk;
             }
             if (num_output_channels >= 2 && output_data != nullptr)
             {
@@ -179,54 +226,55 @@ void StreamGenProcessor::audioDeviceIOCallbackWithContext(
 
         in_path = "sim_file";
 
-        float sim_buf[2048];
-        int to_process = std::min(num_samples, 2048);
+        if (static_cast<int>(m_sim_callback_scratch.size()) < num_samples)
+            m_sim_callback_scratch.assign(static_cast<size_t>(num_samples), 0.0f);
+        float* sim_buf = m_sim_callback_scratch.data();
 
-        for (int i = 0; i < to_process; ++i)
+        const int dev_hz = effective_device_hz(m_current_sample_rate, m_constants.sample_rate);
+        const double sim_hz = static_cast<double>(
+            juce::jmax(1, m_sim_native_sample_rate_hz.load(std::memory_order_relaxed)));
+        const double ratio = sim_hz / static_cast<double>(dev_hz);
+        const double sp = static_cast<double>(speed);
+        const int64_t total_frames = static_cast<int64_t>(m_sim_audio.size());
+        const bool loop = simulation_looping.load(std::memory_order_relaxed);
+        int64_t last_fi = 0;
+
+        for (int i = 0; i < num_samples; ++i)
         {
-            int64_t pos = static_cast<int64_t>(m_sim_playback_pos);
-            int64_t total = static_cast<int64_t>(m_sim_audio.size());
+            const int64_t timeline_i = pos_block_start + static_cast<int64_t>(i);
+            double file_d = static_cast<double>(timeline_i) * ratio * sp + m_sim_file_phase;
+            float s = 0.0f;
 
-            if (total == 0)
+            if (total_frames <= 0)
             {
-                sim_buf[i] = 0.0f;
+                s = 0.0f;
             }
-            else if (pos >= total)
+            else if (loop)
             {
-                if (simulation_looping.load(std::memory_order_relaxed))
-                {
-                    m_sim_playback_pos = 0.0;
-                    pos = 0;
-                    sim_buf[i] = m_sim_audio[static_cast<size_t>(pos)];
-                }
-                else
-                {
-                    sim_buf[i] = 0.0f;
-                    simulation_playing.store(false, std::memory_order_relaxed);
-                }
+                file_d = std::fmod(file_d, static_cast<double>(total_frames));
+                if (file_d < 0.0)
+                    file_d += static_cast<double>(total_frames);
+                last_fi = static_cast<int64_t>(std::floor(file_d));
+                s = m_sim_audio[static_cast<size_t>(last_fi)];
+            }
+            else if (file_d >= static_cast<double>(total_frames))
+            {
+                s = 0.0f;
+                simulation_playing.store(false, std::memory_order_relaxed);
             }
             else
             {
-                sim_buf[i] = m_sim_audio[static_cast<size_t>(pos)];
+                last_fi = static_cast<int64_t>(std::floor(file_d));
+                last_fi = juce::jlimit(static_cast<int64_t>(0), total_frames - 1, last_fi);
+                s = m_sim_audio[static_cast<size_t>(last_fi)];
             }
 
-            m_sim_playback_pos += static_cast<double>(speed);
-        }
-
-        for (int i = 0; i < to_process; ++i)
-        {
-            float s = sim_buf[i];
+            sim_buf[i] = s;
             sum_in_sq += static_cast<double>(s) * static_cast<double>(s);
         }
 
-        simulation_position.store(static_cast<int64_t>(m_sim_playback_pos), std::memory_order_relaxed);
-        write_sax_to_ring(sim_buf, to_process);
-
-        if (to_process < num_samples)
-        {
-            float zeros[2048] = {};
-            write_sax_to_ring(zeros, num_samples - to_process);
-        }
+        simulation_position.store(last_fi, std::memory_order_relaxed);
+        write_sax_to_ring_at(sim_buf, num_samples, pos_block_start);
     }
     else
     {
@@ -242,18 +290,18 @@ void StreamGenProcessor::audioDeviceIOCallbackWithContext(
                 float s = mono_input[i];
                 sum_in_sq += static_cast<double>(s) * static_cast<double>(s);
             }
-            write_sax_to_ring(mono_input, num_samples);
+            write_sax_to_ring_at(mono_input, num_samples, pos_block_start);
         }
         else
         {
             in_path = "live_zeros";
             float zeros[2048] = {};
-            int remaining = num_samples;
-            while (remaining > 0)
+            int written = 0;
+            while (written < num_samples)
             {
-                int chunk = std::min(remaining, 2048);
-                write_sax_to_ring(zeros, chunk);
-                remaining -= chunk;
+                int chunk = std::min(num_samples - written, 2048);
+                write_sax_to_ring_at(zeros, chunk, pos_block_start + static_cast<int64_t>(written));
+                written += chunk;
             }
         }
     }
@@ -277,6 +325,9 @@ void StreamGenProcessor::audioDeviceIOCallbackWithContext(
         {
             drums_path = "warm_plus_ring";
             const int64_t block_start = m_scheduler.absolute_sample_pos();
+            const int dev_hz_w = effective_device_hz(m_current_sample_rate, m_constants.sample_rate);
+            const double warm_hz = static_cast<double>(
+                juce::jmax(1, m_warm_native_sample_rate_hz.load(std::memory_order_relaxed)));
 
             for (int i = 0; i < num_samples; ++i)
             {
@@ -286,13 +337,15 @@ void StreamGenProcessor::audioDeviceIOCallbackWithContext(
 
                 if (m_warm_length_frames > 0)
                 {
-                    int64_t frame_idx = block_start + static_cast<int64_t>(i);
-                    int64_t mod = frame_idx % m_warm_length_frames;
-                    if (mod < 0)
-                        mod += m_warm_length_frames;
-                    size_t idx = static_cast<size_t>(mod) * NUM_CHANNELS;
-                    left = m_warm_audio[idx];
-                    right = m_warm_audio[idx + 1];
+                    const int64_t timeline_i = block_start + static_cast<int64_t>(i);
+                    warm_timeline_to_stereo_linear(
+                        m_warm_audio,
+                        m_warm_length_frames,
+                        warm_hz,
+                        static_cast<double>(dev_hz_w),
+                        timeline_i,
+                        left,
+                        right);
                     consumed_warm_frame = true;
                 }
 
@@ -447,9 +500,7 @@ void StreamGenProcessor::mix_click_track_into(float* left, float* right, int num
     const float vol = click_track_volume.load(std::memory_order_relaxed);
     if (vol <= 1.0e-8f)
         return;
-    const int sr = m_current_sample_rate;
-    if (sr <= 0)
-        return;
+    const int sr = effective_device_hz(m_current_sample_rate, m_constants.sample_rate);
     float bpm = m_scheduler.bpm.load(std::memory_order_relaxed);
     bpm = juce::jlimit(20.0f, 400.0f, bpm);
     const int bpb = juce::jmax(1, m_scheduler.time_sig_numerator.load(std::memory_order_relaxed));
@@ -497,18 +548,24 @@ void StreamGenProcessor::feed_audio(const float* mono_input, int num_samples)
     m_scheduler.advance(num_samples);
 }
 
-void StreamGenProcessor::write_sax_to_ring(const float* mono_input, int num_samples)
+void StreamGenProcessor::write_sax_to_ring_at(
+    const float* mono_input,
+    int num_samples,
+    int64_t abs_block_start)
 {
-    int64_t abs_pos = m_scheduler.absolute_sample_pos();
-
     for (int i = 0; i < num_samples; ++i)
     {
-        int64_t ring_idx = absolute_to_ring_index(abs_pos + i);
+        int64_t ring_idx = absolute_to_ring_index(abs_block_start + static_cast<int64_t>(i));
         size_t base = static_cast<size_t>(ring_idx * NUM_CHANNELS);
         float sample = mono_input[i];
         m_input_ring[base] = sample;
         m_input_ring[base + 1] = sample;
     }
+}
+
+void StreamGenProcessor::write_sax_to_ring(const float* mono_input, int num_samples)
+{
+    write_sax_to_ring_at(mono_input, num_samples, m_scheduler.absolute_sample_pos());
 }
 
 void StreamGenProcessor::read_drums_from_ring(float* left, float* right, int num_samples)
@@ -654,29 +711,43 @@ void StreamGenProcessor::set_simulation_playback_sample(int64_t sample)
         clamped = total - 1;
     if (clamped < 0)
         clamped = 0;
-    m_sim_playback_pos = static_cast<double>(clamped);
+    const int dev_hz = effective_device_hz(m_current_sample_rate, m_constants.sample_rate);
+    const double sim_hz = static_cast<double>(
+        juce::jmax(1, m_sim_native_sample_rate_hz.load(std::memory_order_relaxed)));
+    const double ratio = sim_hz / static_cast<double>(dev_hz);
+    const double sp = static_cast<double>(simulation_speed.load(std::memory_order_relaxed));
+    const int64_t timeline_a = m_scheduler.absolute_sample_pos();
+    m_sim_file_phase = static_cast<double>(clamped) - static_cast<double>(timeline_a) * ratio * sp;
     simulation_position.store(clamped, std::memory_order_relaxed);
 }
 
 void StreamGenProcessor::snap_simulation_position_to_bar_grid()
 {
-    const int sr = m_current_sample_rate > 0 ? m_current_sample_rate : m_constants.sample_rate;
-    if (sr <= 0)
-        return;
     const float bpm = m_scheduler.bpm.load(std::memory_order_relaxed);
     const int bpb = juce::jmax(1, m_scheduler.time_sig_numerator.load(std::memory_order_relaxed));
     if (!m_scheduler.musical_time_enabled.load(std::memory_order_relaxed))
         return;
     const double bpm_d = static_cast<double>(juce::jlimit(20.0f, 400.0f, bpm));
-    const int64_t bar_samples = beats_to_samples(static_cast<double>(bpb), sr, bpm_d);
-    if (bar_samples <= 0)
+    const int sim_sr_int = juce::jmax(1, m_sim_native_sample_rate_hz.load(std::memory_order_relaxed));
+    const int64_t bar_file = beats_to_samples(static_cast<double>(bpb), sim_sr_int, bpm_d);
+    if (bar_file <= 0)
         return;
 
     std::lock_guard<std::mutex> lock(m_sim_mutex);
-    int64_t pos = static_cast<int64_t>(m_sim_playback_pos);
-    const int64_t snapped = (pos / bar_samples) * bar_samples;
-    m_sim_playback_pos = static_cast<double>(snapped);
-    simulation_position.store(snapped, std::memory_order_relaxed);
+    if (m_sim_audio.empty())
+        return;
+    const int dev_hz = effective_device_hz(m_current_sample_rate, m_constants.sample_rate);
+    const double sim_hz = static_cast<double>(sim_sr_int);
+    const double ratio = sim_hz / static_cast<double>(dev_hz);
+    const double sp = static_cast<double>(simulation_speed.load(std::memory_order_relaxed));
+    const int64_t timeline_a = m_scheduler.absolute_sample_pos();
+    const double fp = static_cast<double>(timeline_a) * ratio * sp + m_sim_file_phase;
+    const int64_t fi = static_cast<int64_t>(std::floor(fp));
+    const int64_t snapped_fi = (fi / bar_file) * bar_file;
+    m_sim_file_phase += static_cast<double>(snapped_fi) - fp;
+    const int64_t total = static_cast<int64_t>(m_sim_audio.size());
+    const int64_t pos_store = juce::jlimit(static_cast<int64_t>(0), total - 1, snapped_fi);
+    simulation_position.store(pos_store, std::memory_order_relaxed);
 }
 
 // --- UI waveform readout (bucketed min/max; subsampled ring reads per bucket) ---
@@ -932,8 +1003,13 @@ bool StreamGenProcessor::load_simulation_file(const juce::File& file)
     {
         std::lock_guard<std::mutex> lock(m_sim_mutex);
         m_sim_audio = std::move(mono);
-        m_sim_playback_pos = 0.0;
+        m_sim_file_phase = 0.0;
     }
+
+    const int wav_sr = reader->sampleRate > 0.0
+        ? juce::jlimit(8000, 384000, static_cast<int>(std::lround(reader->sampleRate)))
+        : 44100;
+    m_sim_native_sample_rate_hz.store(wav_sr, std::memory_order_relaxed);
 
     simulation_total_samples.store(num_frames, std::memory_order_relaxed);
     simulation_position.store(0, std::memory_order_relaxed);
@@ -959,7 +1035,8 @@ void StreamGenProcessor::clear_simulation()
 
     std::lock_guard<std::mutex> lock(m_sim_mutex);
     m_sim_audio.clear();
-    m_sim_playback_pos = 0.0;
+    m_sim_file_phase = 0.0;
+    m_sim_native_sample_rate_hz.store(44100, std::memory_order_relaxed);
 
     DBG("StreamGenProcessor: simulation cleared, reverting to live mic");
 }
@@ -993,6 +1070,11 @@ bool StreamGenProcessor::load_warm_start(const juce::File& file, bool start_play
         stereo[dst + 1] = right;
     }
 
+    const int wav_sr = reader->sampleRate > 0.0
+        ? juce::jlimit(8000, 384000, static_cast<int>(std::lround(reader->sampleRate)))
+        : 44100;
+    m_warm_native_sample_rate_hz.store(wav_sr, std::memory_order_relaxed);
+
     {
         std::lock_guard<std::mutex> lock(m_warm_mutex);
         m_warm_audio = std::move(stereo);
@@ -1023,6 +1105,16 @@ bool StreamGenProcessor::warm_start_has_audio() const
 {
     std::lock_guard<std::mutex> lock(m_warm_mutex);
     return m_warm_length_frames > 0;
+}
+
+int StreamGenProcessor::simulation_file_native_sample_rate_hz() const
+{
+    return juce::jmax(1, m_sim_native_sample_rate_hz.load(std::memory_order_relaxed));
+}
+
+int StreamGenProcessor::warm_file_native_sample_rate_hz() const
+{
+    return juce::jmax(1, m_warm_native_sample_rate_hz.load(std::memory_order_relaxed));
 }
 
 } // namespace streamgen
