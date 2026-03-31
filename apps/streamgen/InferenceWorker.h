@@ -71,6 +71,11 @@ public:
     /// When true, `generate()` prints stdout timing (default off for GUI; CLI uses verbose pipeline).
     void set_pipeline_verbose(bool verbose);
 
+    /// Human-readable inference phase for UI: `[idle]`, `[enc]`, `[dit-K]`, `[dec]`.
+    ///
+    /// Reads atomics updated from the worker thread during `generate()` only.
+    juce::String inference_phase_display() const;
+
     /// Crossfade length in samples for overlap-add writes.
     std::atomic<int> crossfade_samples{4410}; // 100ms @ 44100
 
@@ -116,6 +121,11 @@ private:
     StageTiming m_last_timing;
     InferenceSnapshot m_last_snapshot;
     bool m_pipeline_verbose = false;
+
+    /// UI phase: 0 idle, 1 enc, 2 dit, 3 dec (matches pipeline coarse phases).
+    std::atomic<int> m_inference_phase_kind{0};
+    /// 1-based DiT step when `m_inference_phase_kind == 2`.
+    std::atomic<int> m_inference_dit_step{0};
 };
 
 } // namespace streamgen

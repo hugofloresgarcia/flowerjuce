@@ -22,12 +22,6 @@ target_sources(StreamGenApp PRIVATE
     InferenceSnapshot.h
     AudioThreadTelemetry.h
     AudioThreadTelemetry.cpp
-    OperatorDashboardWindow.h
-    OperatorDashboardWindow.cpp
-    OperatorVizComponent.h
-    OperatorVizComponent.cpp
-    DiagnosticLogWriter.h
-    DiagnosticLogWriter.cpp
     GenerationScheduler.h
     GenerationScheduler.cpp
     GenerationTimelineStore.h

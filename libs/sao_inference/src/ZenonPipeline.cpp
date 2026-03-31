@@ -103,7 +103,8 @@ std::vector<float> ZenonPipeline::generate(
     StepCallback callback,
     const std::vector<float>& external_noise,
     const std::string& dump_steps_dir,
-    const std::vector<float>* precomputed_t5_masked)
+    const std::vector<float>* precomputed_t5_masked,
+    PhaseProgressCallback phase_callback)
 {
     int C = m_config.latent_dim;
     int T = m_config.latent_length;
@@ -112,6 +113,9 @@ std::vector<float> ZenonPipeline::generate(
     constexpr int T5_SEQ_LEN = 64;
 
     m_diagnostics = ZenonDiagnostics{};
+
+    if (phase_callback)
+        phase_callback(ZenonInferencePhase::Encode, 0);
 
     auto total_start = Clock::now();
 
@@ -222,7 +226,8 @@ std::vector<float> ZenonPipeline::generate(
     m_timing.sampling_step_ms.clear();
     m_timing.sampling_step_ms.reserve(static_cast<size_t>(steps));
     m_diagnostics.diffusion_steps.clear();
-    m_diagnostics.diffusion_steps.reserve(static_cast<size_t>(steps));
+    if (m_collect_step_diagnostics)
+        m_diagnostics.diffusion_steps.reserve(static_cast<size_t>(steps));
     t0 = Clock::now();
 
     SamplerConfig sampler_config;
@@ -233,17 +238,23 @@ std::vector<float> ZenonPipeline::generate(
 
     auto sampled = sample_euler_cfg_inpaint(*m_dit, noise, conditioning, sampler_config, m_config,
         [&](int step, float t, const std::vector<float>& x) {
+            if (phase_callback)
+                phase_callback(ZenonInferencePhase::DiT, step + 1);
+
             m_timing.sampling_step_ms.push_back(elapsed_ms(t0));
             t0 = Clock::now();
 
-            ZenonDiffusionStepStats step_stats;
-            step_stats.step_index = step;
-            step_stats.t_curr = t;
-            ZenonLatentStats x_stats;
-            compute_mean_std(x, x_stats);
-            step_stats.mean_x = x_stats.mean;
-            step_stats.std_x = x_stats.std_dev;
-            m_diagnostics.diffusion_steps.push_back(step_stats);
+            if (m_collect_step_diagnostics)
+            {
+                ZenonDiffusionStepStats step_stats;
+                step_stats.step_index = step;
+                step_stats.t_curr = t;
+                ZenonLatentStats x_stats;
+                compute_mean_std(x, x_stats);
+                step_stats.mean_x = x_stats.mean;
+                step_stats.std_x = x_stats.std_dev;
+                m_diagnostics.diffusion_steps.push_back(step_stats);
+            }
 
             if (!dump_steps_dir.empty()) {
                 std::ostringstream fname;
@@ -258,6 +269,9 @@ std::vector<float> ZenonPipeline::generate(
     for (double s : m_timing.sampling_step_ms) m_timing.sampling_total_ms += s;
 
     // ---- Step 10: VAE decode ----
+    if (phase_callback)
+        phase_callback(ZenonInferencePhase::Decode, 0);
+
     t0 = Clock::now();
     auto audio = m_vae_decoder->decode(sampled, T);
     m_timing.vae_decode_ms = elapsed_ms(t0);

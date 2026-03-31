@@ -9,7 +9,6 @@
 #include "ControlsComponent.h"
 #include "MixerComponent.h"
 #include "SimulationWindow.h"
-#include "OperatorDashboardWindow.h"
 
 #include <juce_gui_basics/juce_gui_basics.h>
 #include <juce_audio_utils/juce_audio_utils.h>
@@ -55,8 +54,7 @@ private:
     void timerCallback() override;
     void show_audio_settings();
     void show_simulation_window();
-    void show_operator_dashboard();
-    void load_warm_start();
+    void load_warmup_audio();
     void try_load_default_audio_from_repo(const juce::File& manifest_file);
 
     /// Set scheduler + UI to 120 BPM / 4/4 musical grid when default repo test assets are loaded.
@@ -80,7 +78,6 @@ private:
     MixerComponent m_mixer;
 
     std::unique_ptr<SimulationWindow> m_simulation_window;
-    std::unique_ptr<OperatorDashboardWindow> m_operator_window;
 
     juce::Label m_title_label;
 
@@ -93,6 +90,11 @@ private:
     std::vector<float> m_drums_wave_warm_max;
     std::vector<float> m_drums_wave_gen_min;
     std::vector<float> m_drums_wave_gen_max;
+    std::vector<float> m_drums_wave_hold_min;
+    std::vector<float> m_drums_wave_hold_max;
+
+    /// Last `wave_w` passed to bucket vectors; skip resize when unchanged.
+    int m_waveform_bucket_width = -1;
 };
 
 } // namespace streamgen

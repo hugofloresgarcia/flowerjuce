@@ -1,6 +1,7 @@
 #include "sao_inference/RectifiedFlowSampler.h"
-#include <cmath>
 #include <cassert>
+#include <cmath>
+#include <cstring>
 #include <iostream>
 
 namespace sao {
@@ -44,37 +45,35 @@ std::vector<float> sample_euler_cfg(
 
     std::vector<float> x = noise;
 
+    std::vector<float> batch_x(static_cast<size_t>(2 * latent_size));
+    std::vector<float> batch_t(2);
+    std::vector<float> batch_cross_attn(static_cast<size_t>(2 * seq_len * embed_dim), 0.0f);
+    const size_t cross_attn_elems = static_cast<size_t>(seq_len * embed_dim);
+    std::memcpy(
+        batch_cross_attn.data(),
+        conditioning.cross_attn_cond.data(),
+        cross_attn_elems * sizeof(float));
+
+    std::vector<float> batch_global(static_cast<size_t>(2 * embed_dim));
+    const size_t global_bytes = static_cast<size_t>(embed_dim) * sizeof(float);
+    std::memcpy(batch_global.data(), conditioning.global_embed.data(), global_bytes);
+    std::memcpy(batch_global.data() + embed_dim, conditioning.global_embed.data(), global_bytes);
+
+    std::vector<float> v(static_cast<size_t>(latent_size));
+
     for (int i = 0; i < config.steps; ++i) {
         float t_curr = t_schedule[i];
         float t_prev = t_schedule[i + 1];
         float dt = t_prev - t_curr;
 
-        // --- CFG batch doubling ---
-        // Stack x twice for batch=2 (cond, uncond)
-        std::vector<float> batch_x(2 * latent_size);
-        std::copy(x.begin(), x.end(), batch_x.begin());
-        std::copy(x.begin(), x.end(), batch_x.begin() + latent_size);
+        const size_t latent_bytes = static_cast<size_t>(latent_size) * sizeof(float);
+        std::memcpy(batch_x.data(), x.data(), latent_bytes);
+        std::memcpy(batch_x.data() + latent_size, x.data(), latent_bytes);
 
-        // Stack timestep
-        std::vector<float> batch_t = {t_curr, t_curr};
+        batch_t[0] = t_curr;
+        batch_t[1] = t_curr;
 
-        // Stack cross_attn: cond + null (zeros)
-        std::vector<float> batch_cross_attn(2 * seq_len * embed_dim, 0.0f);
-        std::copy(conditioning.cross_attn_cond.begin(),
-                  conditioning.cross_attn_cond.end(),
-                  batch_cross_attn.begin());
-        // Second half is already zeros (null conditioning)
-
-        // Stack global_embed: same for both (not nulled for global)
-        std::vector<float> batch_global(2 * embed_dim);
-        std::copy(conditioning.global_embed.begin(),
-                  conditioning.global_embed.end(),
-                  batch_global.begin());
-        std::copy(conditioning.global_embed.begin(),
-                  conditioning.global_embed.end(),
-                  batch_global.begin() + embed_dim);
-
-        // Run DiT with batch=2
+        // Run DiT with batch=2 (second half of batch_cross_attn stays zero = null conditioning)
         auto batch_output = dit.forward(
             batch_x, batch_t, batch_cross_attn, batch_global,
             2, seq_len
@@ -82,7 +81,6 @@ std::vector<float> sample_euler_cfg(
 
         // Split output: first half is conditioned, second half is unconditioned
         // Apply CFG: v = uncond + cfg_scale * (cond - uncond)
-        std::vector<float> v(latent_size);
         for (int j = 0; j < latent_size; ++j) {
             float cond_out = batch_output[j];
             float uncond_out = batch_output[latent_size + j];

@@ -29,17 +29,27 @@ constexpr int k_quantize_item_count = static_cast<int>(sizeof(k_quantize_item_id
 constexpr int k_hop_bar_combo_id_half = 1;
 constexpr int k_hop_bar_combo_id_one = 2;
 constexpr int k_hop_bar_combo_id_two = 3;
+constexpr int k_hop_bar_combo_id_three = 4;
+constexpr int k_hop_bar_combo_id_four = 5;
 
 constexpr int k_delay_bar_combo_id_zero = 1;
 constexpr int k_delay_bar_combo_id_one = 2;
 constexpr int k_delay_bar_combo_id_two = 3;
+constexpr int k_delay_bar_combo_id_three = 4;
+constexpr int k_delay_bar_combo_id_four = 5;
 
 float hop_bars_for_combo_id(int combo_id)
 {
     if (combo_id == k_hop_bar_combo_id_half)
         return 0.5f;
+    if (combo_id == k_hop_bar_combo_id_one)
+        return 1.0f;
     if (combo_id == k_hop_bar_combo_id_two)
         return 2.0f;
+    if (combo_id == k_hop_bar_combo_id_three)
+        return 3.0f;
+    if (combo_id == k_hop_bar_combo_id_four)
+        return 4.0f;
     return 1.0f;
 }
 
@@ -49,15 +59,23 @@ int combo_id_for_hop_bars(float hop_bars)
         return k_hop_bar_combo_id_half;
     if (hop_bars <= 1.5f)
         return k_hop_bar_combo_id_one;
-    return k_hop_bar_combo_id_two;
+    if (hop_bars <= 2.5f)
+        return k_hop_bar_combo_id_two;
+    if (hop_bars <= 3.5f)
+        return k_hop_bar_combo_id_three;
+    return k_hop_bar_combo_id_four;
 }
 
 float delay_bars_for_combo_id(int combo_id)
 {
-    if (combo_id == k_delay_bar_combo_id_two)
-        return 2.0f;
     if (combo_id == k_delay_bar_combo_id_one)
         return 1.0f;
+    if (combo_id == k_delay_bar_combo_id_two)
+        return 2.0f;
+    if (combo_id == k_delay_bar_combo_id_three)
+        return 3.0f;
+    if (combo_id == k_delay_bar_combo_id_four)
+        return 4.0f;
     return 0.0f;
 }
 
@@ -67,7 +85,11 @@ int combo_id_for_delay_bars(float delay_bars)
         return k_delay_bar_combo_id_zero;
     if (delay_bars <= 1.5f)
         return k_delay_bar_combo_id_one;
-    return k_delay_bar_combo_id_two;
+    if (delay_bars <= 2.5f)
+        return k_delay_bar_combo_id_two;
+    if (delay_bars <= 3.5f)
+        return k_delay_bar_combo_id_three;
+    return k_delay_bar_combo_id_four;
 }
 
 } // namespace
@@ -172,6 +194,8 @@ ControlsComponent::ControlsComponent()
     m_hop_bars_combo.addItem("Hop: 1/2 bar", k_hop_bar_combo_id_half);
     m_hop_bars_combo.addItem("Hop: 1 bar", k_hop_bar_combo_id_one);
     m_hop_bars_combo.addItem("Hop: 2 bars", k_hop_bar_combo_id_two);
+    m_hop_bars_combo.addItem("Hop: 3 bars", k_hop_bar_combo_id_three);
+    m_hop_bars_combo.addItem("Hop: 4 bars", k_hop_bar_combo_id_four);
     m_hop_bars_combo.setSelectedId(k_hop_bar_combo_id_one, juce::dontSendNotification);
     m_hop_bars_combo.onChange = [this]()
     {
@@ -196,6 +220,8 @@ ControlsComponent::ControlsComponent()
     m_schedule_delay_bars_combo.addItem("Land: 0 bars", k_delay_bar_combo_id_zero);
     m_schedule_delay_bars_combo.addItem("Land: 1 bar", k_delay_bar_combo_id_one);
     m_schedule_delay_bars_combo.addItem("Land: 2 bars", k_delay_bar_combo_id_two);
+    m_schedule_delay_bars_combo.addItem("Land: 3 bars", k_delay_bar_combo_id_three);
+    m_schedule_delay_bars_combo.addItem("Land: 4 bars", k_delay_bar_combo_id_four);
     m_schedule_delay_bars_combo.setSelectedId(k_delay_bar_combo_id_zero, juce::dontSendNotification);
     m_schedule_delay_bars_combo.onChange = [this]()
     {
@@ -266,20 +292,20 @@ ControlsComponent::ControlsComponent()
     };
     addAndMakeVisible(m_cfg_slider);
 
-    LayerCakeLookAndFeel::setControlButtonType(m_warm_start_button, LayerCakeLookAndFeel::ControlButtonType::Preset);
-    m_warm_start_button.onClick = [this]()
+    LayerCakeLookAndFeel::setControlButtonType(m_warmup_audio_button, LayerCakeLookAndFeel::ControlButtonType::Preset);
+    m_warmup_audio_button.onClick = [this]()
     {
-        if (on_warm_start_clicked)
-            on_warm_start_clicked();
+        if (on_warmup_audio_clicked)
+            on_warmup_audio_clicked();
     };
-    addAndMakeVisible(m_warm_start_button);
+    addAndMakeVisible(m_warmup_audio_button);
 
-    m_warm_route_toggle.onClick = [this]()
+    m_warmup_audio_route_toggle.onClick = [this]()
     {
-        if (on_warm_route_toggled)
-            on_warm_route_toggled(m_warm_route_toggle.getToggleState());
+        if (on_warmup_audio_route_toggled)
+            on_warmup_audio_route_toggled(m_warmup_audio_route_toggle.getToggleState());
     };
-    addAndMakeVisible(m_warm_route_toggle);
+    addAndMakeVisible(m_warmup_audio_route_toggle);
 
     m_loop_last_gen_toggle.setToggleState(true, juce::dontSendNotification);
     m_loop_last_gen_toggle.onClick = [this]()
@@ -304,14 +330,6 @@ ControlsComponent::ControlsComponent()
             on_audio_settings_clicked();
     };
     addAndMakeVisible(m_audio_settings_button);
-
-    LayerCakeLookAndFeel::setControlButtonType(m_operator_button, LayerCakeLookAndFeel::ControlButtonType::Pattern);
-    m_operator_button.onClick = [this]()
-    {
-        if (on_operator_clicked)
-            on_operator_clicked();
-    };
-    addAndMakeVisible(m_operator_button);
 
     LayerCakeLookAndFeel::setControlButtonType(m_reset_button, LayerCakeLookAndFeel::ControlButtonType::Record);
     m_reset_button.onClick = [this]()
@@ -419,6 +437,11 @@ void ControlsComponent::sync_time_mode_from_scheduler(const GenerationScheduler&
     refresh_musical_hop_delay_visibility();
 }
 
+void ControlsComponent::set_loop_last_generation_toggle(bool on, juce::NotificationType notification)
+{
+    m_loop_last_gen_toggle.setToggleState(on, notification);
+}
+
 void ControlsComponent::sync_hop_delay_controls_from_scheduler(const GenerationScheduler& sched)
 {
     const bool musical = sched.musical_time_enabled.load(std::memory_order_relaxed);
@@ -449,14 +472,14 @@ int ControlsComponent::time_sig_combo_index_for(int numerator, int denominator)
     return 0;
 }
 
-void ControlsComponent::set_warm_route_toggle(bool route_to_output, juce::NotificationType notification)
+void ControlsComponent::set_warmup_audio_route_toggle(bool route_to_output, juce::NotificationType notification)
 {
-    m_warm_route_toggle.setToggleState(route_to_output, notification);
+    m_warmup_audio_route_toggle.setToggleState(route_to_output, notification);
 }
 
-void ControlsComponent::set_warm_route_enabled(bool enabled)
+void ControlsComponent::set_warmup_audio_route_enabled(bool enabled)
 {
-    m_warm_route_toggle.setEnabled(enabled);
+    m_warmup_audio_route_toggle.setEnabled(enabled);
 }
 
 void ControlsComponent::layout_prompt_block(juce::Rectangle<int> inner)
@@ -545,9 +568,9 @@ void ControlsComponent::layout_session_rows(juce::Rectangle<int> inner)
     row.removeFromLeft(spacing);
     m_loop_last_gen_toggle.setBounds(row.removeFromLeft(130));
     row.removeFromLeft(spacing);
-    m_warm_start_button.setBounds(row.removeFromLeft(btn_w));
+    m_warmup_audio_button.setBounds(row.removeFromLeft(btn_w));
     row.removeFromLeft(spacing);
-    m_warm_route_toggle.setBounds(row.removeFromLeft(small_toggle_w));
+    m_warmup_audio_route_toggle.setBounds(row.removeFromLeft(small_toggle_w));
     row.removeFromLeft(spacing);
     m_simulate_button.setBounds(row.removeFromLeft(btn_w));
     row.removeFromLeft(spacing);
@@ -555,8 +578,6 @@ void ControlsComponent::layout_session_rows(juce::Rectangle<int> inner)
 
     inner.removeFromTop(spacing);
     row = inner.removeFromTop(row_h);
-    m_operator_button.setBounds(row.removeFromLeft(btn_w));
-    row.removeFromLeft(spacing);
     m_reset_button.setBounds(row.removeFromLeft(88));
 }
 

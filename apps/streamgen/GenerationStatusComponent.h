@@ -22,9 +22,12 @@ public:
     ///     worker_busy: Whether the worker is currently processing a job.
     ///     source_label: Input source description (e.g. "Live Mic", "Simulation (file.wav)").
     ///     last_land_timeline: Optional one-line summary of where/when the last gen landed on the timeline.
+    ///     drums_hold: True when drums output is playing last-gen loop hold (waiting for new ring audio).
+    ///     inference_phase: Coarse pipeline phase label (e.g. [idle], [enc], [dit-3], [dec]).
     void update(int queue_depth, int64_t generation_count, double last_latency_ms,
                 int64_t last_job_id, bool worker_busy, const juce::String& source_label,
-                const juce::String& last_land_timeline = {});
+                const juce::String& last_land_timeline, bool drums_hold,
+                const juce::String& inference_phase);
 
     void paint(juce::Graphics& g) override;
 
@@ -36,6 +39,8 @@ private:
     bool m_worker_busy = false;
     juce::String m_source_label = "Not started";
     juce::String m_last_land_timeline;
+    bool m_drums_hold = false;
+    juce::String m_inference_phase = "[idle]";
 };
 
 } // namespace streamgen

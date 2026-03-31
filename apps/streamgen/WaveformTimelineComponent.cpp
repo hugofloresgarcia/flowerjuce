@@ -83,6 +83,10 @@ constexpr float k_job_band_gap_px = 2.0f;
 constexpr float k_keep_band_height_fraction = 0.12f;
 constexpr float k_keep_band_min_px = 10.0f;
 
+/// Asymmetric smoothing for autoscale: fast when peaks grow (gain must drop), slow when they fall.
+constexpr float k_waveform_gain_snap_down = 0.42f;
+constexpr float k_waveform_gain_creep_up = 0.07f;
+
 float job_highlight_band_height(float waveform_height)
 {
     return juce::jmax(k_job_band_min_px, waveform_height * k_job_band_height_fraction);
@@ -203,7 +207,9 @@ void WaveformTimelineComponent::update(
     const float* drums_warm_min,
     const float* drums_warm_max,
     const float* drums_gen_min,
-    const float* drums_gen_max)
+    const float* drums_gen_max,
+    const float* drums_hold_min,
+    const float* drums_hold_max)
 {
     if (num_px <= 0 || min_per_px == nullptr || max_per_px == nullptr)
     {
@@ -213,7 +219,10 @@ void WaveformTimelineComponent::update(
         m_drums_warm_max_px.clear();
         m_drums_gen_min_px.clear();
         m_drums_gen_max_px.clear();
+        m_drums_hold_min_px.clear();
+        m_drums_hold_max_px.clear();
         m_drums_source_split = false;
+        m_waveform_display_gain = 1.0f;
     }
     else
     {
@@ -221,13 +230,16 @@ void WaveformTimelineComponent::update(
         m_max_px.assign(max_per_px, max_per_px + static_cast<size_t>(num_px));
         const bool want_split = role == TimelineWaveRole::DrumsOutput
             && drums_warm_min != nullptr && drums_warm_max != nullptr
-            && drums_gen_min != nullptr && drums_gen_max != nullptr;
+            && drums_gen_min != nullptr && drums_gen_max != nullptr
+            && drums_hold_min != nullptr && drums_hold_max != nullptr;
         if (want_split)
         {
             m_drums_warm_min_px.assign(drums_warm_min, drums_warm_min + static_cast<size_t>(num_px));
             m_drums_warm_max_px.assign(drums_warm_max, drums_warm_max + static_cast<size_t>(num_px));
             m_drums_gen_min_px.assign(drums_gen_min, drums_gen_min + static_cast<size_t>(num_px));
             m_drums_gen_max_px.assign(drums_gen_max, drums_gen_max + static_cast<size_t>(num_px));
+            m_drums_hold_min_px.assign(drums_hold_min, drums_hold_min + static_cast<size_t>(num_px));
+            m_drums_hold_max_px.assign(drums_hold_max, drums_hold_max + static_cast<size_t>(num_px));
             m_drums_source_split = true;
         }
         else
@@ -236,6 +248,8 @@ void WaveformTimelineComponent::update(
             m_drums_warm_max_px.clear();
             m_drums_gen_min_px.clear();
             m_drums_gen_max_px.clear();
+            m_drums_hold_min_px.clear();
+            m_drums_hold_max_px.clear();
             m_drums_source_split = false;
         }
     }
@@ -311,6 +325,7 @@ void WaveformTimelineComponent::paint(juce::Graphics& g)
     juce::Colour accent_green(0xff3cff9f);
     juce::Colour accent_cyan(0xff35c0ff);
     juce::Colour accent_amber(0xfff2b950);
+    juce::Colour accent_hold_magenta(0xffe040fb);
     juce::Colour wave_line = accent_cyan;
     if (auto* lc = dynamic_cast<LayerCakeLookAndFeel*>(&lf))
     {
@@ -453,7 +468,9 @@ void WaveformTimelineComponent::paint(juce::Graphics& g)
             && static_cast<int>(m_drums_warm_min_px.size()) >= n
             && static_cast<int>(m_drums_warm_max_px.size()) >= n
             && static_cast<int>(m_drums_gen_min_px.size()) >= n
-            && static_cast<int>(m_drums_gen_max_px.size()) >= n;
+            && static_cast<int>(m_drums_gen_max_px.size()) >= n
+            && static_cast<int>(m_drums_hold_min_px.size()) >= n
+            && static_cast<int>(m_drums_hold_max_px.size()) >= n;
 
         float peak_abs = 0.0f;
         if (split_drums)
@@ -465,6 +482,8 @@ void WaveformTimelineComponent::paint(juce::Graphics& g)
                 peak_abs = std::max(peak_abs, std::abs(m_drums_warm_max_px[p]));
                 peak_abs = std::max(peak_abs, std::abs(m_drums_gen_min_px[p]));
                 peak_abs = std::max(peak_abs, std::abs(m_drums_gen_max_px[p]));
+                peak_abs = std::max(peak_abs, std::abs(m_drums_hold_min_px[p]));
+                peak_abs = std::max(peak_abs, std::abs(m_drums_hold_max_px[p]));
             }
         }
         else
@@ -475,12 +494,16 @@ void WaveformTimelineComponent::paint(juce::Graphics& g)
                 peak_abs = std::max(peak_abs, std::abs(m_max_px[static_cast<size_t>(px)]));
             }
         }
-        const float display_gain = std::min(1.0f / std::max(peak_abs, 1.0e-6f), 8.0f);
+        const float target_gain = std::min(1.0f / std::max(peak_abs, 1.0e-6f), 8.0f);
+        const float alpha = (target_gain < m_waveform_display_gain) ? k_waveform_gain_snap_down : k_waveform_gain_creep_up;
+        m_waveform_display_gain += (target_gain - m_waveform_display_gain) * alpha;
+        const float display_gain = m_waveform_display_gain;
 
         if (split_drums)
         {
             const juce::Colour colour_warm = accent_amber;
             const juce::Colour colour_gen = accent_cyan;
+            const juce::Colour colour_hold = accent_hold_magenta;
             juce::Path wave_warm;
             for (int px = 0; px < n; ++px)
             {
@@ -509,10 +532,26 @@ void WaveformTimelineComponent::paint(juce::Graphics& g)
                 wave_gen.startNewSubPath(x, y_hi);
                 wave_gen.lineTo(x, y_lo);
             }
+            juce::Path wave_hold;
+            for (int px = 0; px < n; ++px)
+            {
+                const size_t p = static_cast<size_t>(px);
+                float mn = m_drums_hold_min_px[p];
+                float mx = m_drums_hold_max_px[p];
+                float peak = std::max(std::abs(mn), std::abs(mx));
+                peak = std::max(0.0f, std::min(1.0f, peak * display_gain));
+                const float y_hi = mid_y - peak * amp;
+                const float y_lo = mid_y + peak * amp;
+                const float x = (static_cast<float>(px) + 0.5f) * column_w;
+                wave_hold.startNewSubPath(x, y_hi);
+                wave_hold.lineTo(x, y_lo);
+            }
             g.setColour(colour_warm);
             g.strokePath(wave_warm, juce::PathStrokeType(1.0f));
             g.setColour(colour_gen);
             g.strokePath(wave_gen, juce::PathStrokeType(1.0f));
+            g.setColour(colour_hold);
+            g.strokePath(wave_hold, juce::PathStrokeType(1.0f));
         }
         else
         {

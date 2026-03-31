@@ -3,6 +3,7 @@
 #include "GenerationTimelineStore.h"
 
 #include <algorithm>
+#include <cassert>
 #include <chrono>
 
 namespace streamgen {
@@ -90,6 +91,23 @@ InferenceSnapshot InferenceWorker::last_snapshot() const
 {
     std::lock_guard<std::mutex> lock(m_worker_state_mutex);
     return m_last_snapshot;
+}
+
+juce::String InferenceWorker::inference_phase_display() const
+{
+    const int k = m_inference_phase_kind.load(std::memory_order_relaxed);
+    if (k == 0)
+        return "[idle]";
+    if (k == 1)
+        return "[enc]";
+    if (k == 2)
+    {
+        const int s = m_inference_dit_step.load(std::memory_order_relaxed);
+        return "[dit-" + juce::String(s) + "]";
+    }
+    if (k == 3)
+        return "[dec]";
+    return "[idle]";
 }
 
 void InferenceWorker::set_pipeline_verbose(bool verbose)
@@ -198,7 +216,26 @@ void InferenceWorker::process_job(const GenerationJob& job)
         nullptr,
         {},
         "",
-        precomputed_t5
+        precomputed_t5,
+        [this](sao::ZenonInferencePhase phase, int dit_step_1_based)
+        {
+            if (phase == sao::ZenonInferencePhase::Encode)
+            {
+                m_inference_phase_kind.store(1, std::memory_order_relaxed);
+                m_inference_dit_step.store(0, std::memory_order_relaxed);
+            }
+            else if (phase == sao::ZenonInferencePhase::DiT)
+            {
+                m_inference_phase_kind.store(2, std::memory_order_relaxed);
+                m_inference_dit_step.store(dit_step_1_based, std::memory_order_relaxed);
+            }
+            else
+            {
+                assert(phase == sao::ZenonInferencePhase::Decode);
+                m_inference_phase_kind.store(3, std::memory_order_relaxed);
+                m_inference_dit_step.store(0, std::memory_order_relaxed);
+            }
+        }
     );
 
     if (!reuse_t5)
@@ -276,6 +313,9 @@ void InferenceWorker::process_job(const GenerationJob& job)
         + " t5=" + juce::String(pipeline_timing.t5_encode_ms, 1)
         + " dit=" + juce::String(pipeline_timing.sampling_total_ms, 1)
         + " vae_dec=" + juce::String(pipeline_timing.vae_decode_ms, 1) + ")");
+
+    m_inference_phase_kind.store(0, std::memory_order_relaxed);
+    m_inference_dit_step.store(0, std::memory_order_relaxed);
 }
 
 void InferenceWorker::update_tokenization()

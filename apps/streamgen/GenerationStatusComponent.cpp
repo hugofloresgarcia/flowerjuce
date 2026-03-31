@@ -15,7 +15,9 @@ void GenerationStatusComponent::update(
     int64_t last_job_id,
     bool worker_busy,
     const juce::String& source_label,
-    const juce::String& last_land_timeline)
+    const juce::String& last_land_timeline,
+    bool drums_hold,
+    const juce::String& inference_phase)
 {
     m_queue_depth = queue_depth;
     m_generation_count = generation_count;
@@ -24,6 +26,8 @@ void GenerationStatusComponent::update(
     m_worker_busy = worker_busy;
     m_source_label = source_label;
     m_last_land_timeline = last_land_timeline;
+    m_drums_hold = drums_hold;
+    m_inference_phase = inference_phase;
     repaint();
 }
 
@@ -39,12 +43,16 @@ void GenerationStatusComponent::paint(juce::Graphics& g)
     juce::Colour gen_c(0xff35c0ff);
     juce::Colour lat_y(0xfff2b950);
     juce::Colour land_m(0xfff45bff);
+    juce::Colour hold_c(0xffffaa44);
+    juce::Colour phase_c(0xffb388ff);
     if (auto* lc = dynamic_cast<LayerCakeLookAndFeel*>(&lf))
     {
         busy_on = lc->getControlAccentColour(LayerCakeLookAndFeel::ControlButtonType::Clock);
         gen_c = lc->getLayerColour(1).brighter(0.45f);
         lat_y = lc->getLayerColour(2).brighter(0.45f);
         land_m = lc->getLayerColour(5).brighter(0.45f);
+        hold_c = lc->getLayerColour(2).brighter(0.2f);
+        phase_c = lc->getLayerColour(4).brighter(0.35f);
     }
 
     g.fillAll(panel);
@@ -70,6 +78,11 @@ void GenerationStatusComponent::paint(juce::Graphics& g)
 
     const juce::Colour busy_colour = m_worker_busy ? busy_on : idle_grey;
     draw_row("Worker:", m_worker_busy ? "BUSY" : "IDLE", busy_colour);
+
+    draw_row("Phase:", m_inference_phase, phase_c);
+
+    const juce::Colour drums_out_colour = m_drums_hold ? hold_c : idle_grey;
+    draw_row("Drums out:", m_drums_hold ? "HOLD" : "LIVE", drums_out_colour);
 
     draw_row("Queue:", juce::String(m_queue_depth), terminal);
 

@@ -9,11 +9,23 @@
 #include "InpaintConditioningAssembler.h"
 #include "InpaintSampler.h"
 
+#include <cstdint>
+#include <functional>
 #include <memory>
 #include <string>
 #include <vector>
 
 namespace sao {
+
+/// High-level phase of `ZenonPipeline::generate()` for progress UI.
+enum class ZenonInferencePhase : uint8_t {
+    Encode = 0, ///< VAE encode (if needed), T5, conditioning, noise prep (everything before sampling).
+    DiT = 1,    ///< Rectified-flow sampling; use `dit_step_1_based` (1..steps).
+    Decode = 2, ///< VAE decode to waveform.
+};
+
+/// Optional progress hook: `dit_step_1_based` is 1..steps when `phase == DiT`, otherwise 0.
+using PhaseProgressCallback = std::function<void(ZenonInferencePhase phase, int dit_step_1_based)>;
 
 /// First-order statistics for a flat float tensor (e.g. latent vector).
 struct ZenonLatentStats {
@@ -99,6 +111,8 @@ public:
     ///         length 64 * cond_token_dim with T5 outputs already multiplied
     ///         by the attention mask (same layout as the masked tensor passed to
     ///         assemble_inpaint_conditioning). Skips ONNX T5 encode; t5_encode_ms is 0.
+    ///     phase_callback: If non-null, invoked at encode start, at each DiT step (1-based index),
+    ///         and at decode start.
     ///
     /// Returns:
     ///     Decoded stereo audio, flat row-major (2, audio_length).
@@ -117,7 +131,8 @@ public:
         StepCallback callback = nullptr,
         const std::vector<float>& external_noise = {},
         const std::string& dump_steps_dir = "",
-        const std::vector<float>* precomputed_t5_masked = nullptr
+        const std::vector<float>* precomputed_t5_masked = nullptr,
+        PhaseProgressCallback phase_callback = nullptr
     );
 
     /// Masked T5 embeddings from the last `generate()` that ran the T5 encoder
@@ -131,7 +146,14 @@ public:
 
     /// When false, suppresses stdout timing/latent messages from `generate()` (CLI may keep default true).
     void set_verbose(bool verbose) { m_verbose = verbose; }
+
     bool verbose() const { return m_verbose; }
+
+    /// When true, each diffusion step records mean/std of `x` in `diagnostics().diffusion_steps`.
+    /// Default false skips those full-latent scans; step wall-clock timings are always collected.
+    void set_collect_step_diagnostics(bool enabled) { m_collect_step_diagnostics = enabled; }
+
+    bool collect_step_diagnostics() const { return m_collect_step_diagnostics; }
 
 private:
     std::unique_ptr<T5Encoder> m_t5;
@@ -144,6 +166,7 @@ private:
     ZenonDiagnostics m_diagnostics;
     std::vector<float> m_last_masked_t5;
     bool m_verbose = true;
+    bool m_collect_step_diagnostics = false;
 };
 
 } // namespace sao

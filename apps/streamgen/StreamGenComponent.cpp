@@ -6,7 +6,7 @@ namespace streamgen {
 
 namespace {
 
-constexpr const char* k_default_warm_rel = "tests/streamgen_test_audio/drums_120bpm.wav";
+constexpr const char* k_default_warmup_audio_rel = "tests/streamgen_test_audio/drums_120bpm.wav";
 constexpr const char* k_default_sim_rel = "tests/streamgen_test_audio/synth_120bpm_medium.wav";
 
 /// Walk parents of `manifest_path` until `tests/streamgen_test_audio/` exists (repo layout).
@@ -136,6 +136,8 @@ StreamGenComponent::StreamGenComponent(
     m_controls.on_loop_last_generation_changed = [this](bool enabled)
     {
         m_processor.loop_last_generation.store(enabled, std::memory_order_relaxed);
+        if (!enabled)
+            m_processor.clear_drums_output_buffers();
     };
 
     m_controls.on_click_track_enabled_changed = [this](bool enabled)
@@ -153,20 +155,25 @@ StreamGenComponent::StreamGenComponent(
         m_processor.scheduler().quantize_launch_beats.store(beats, std::memory_order_relaxed);
     };
 
-    m_controls.on_warm_start_clicked = [this]() { load_warm_start(); };
-    m_controls.on_warm_route_toggled = [this](bool route_to_output)
+    m_controls.on_warmup_audio_clicked = [this]() { load_warmup_audio(); };
+    m_controls.on_warmup_audio_route_toggled = [this](bool route_to_output)
     {
-        m_processor.set_warm_start_playing(route_to_output);
+        m_processor.set_warmup_audio_playing(route_to_output);
     };
     m_controls.on_simulate_clicked = [this]() { show_simulation_window(); };
     m_controls.on_audio_settings_clicked = [this]() { show_audio_settings(); };
-    m_controls.on_operator_clicked = [this]() { show_operator_dashboard(); };
 
     m_controls.on_reset_clicked = [this]() { reset_session(); };
 
     m_controls.on_generation_enabled_changed = [this](bool enabled)
     {
         m_processor.scheduler().generation_enabled.store(enabled, std::memory_order_relaxed);
+        if (!enabled)
+        {
+            m_processor.loop_last_generation.store(false, std::memory_order_relaxed);
+            m_controls.set_loop_last_generation_toggle(false, juce::dontSendNotification);
+            m_processor.clear_drums_output_buffers();
+        }
         DBG("StreamGenComponent: generation " + juce::String(enabled ? "enabled" : "disabled"));
         streamgen_log("UI: generation_enabled=" + juce::String(enabled ? "true" : "false"));
     };
@@ -181,7 +188,7 @@ StreamGenComponent::StreamGenComponent(
         m_processor.drums_gain.store(val, std::memory_order_relaxed);
     };
 
-    m_controls.set_warm_route_enabled(false);
+    m_controls.set_warmup_audio_route_enabled(false);
 
     m_controls.sync_time_mode_from_scheduler(
         m_processor.scheduler(),
@@ -189,7 +196,7 @@ StreamGenComponent::StreamGenComponent(
     m_controls.sync_click_track_from_processor(m_processor);
 
     setSize(1000, 720);
-    startTimerHz(20);
+    startTimerHz(18);
 }
 
 StreamGenComponent::~StreamGenComponent()
@@ -220,7 +227,7 @@ void StreamGenComponent::load_pipeline(
     }
 
     // While the callback is detached, zero playhead/rings/timeline so the first block sees abs=0.
-    // Warm uses absolute_sample_pos % loop; this avoids a stale playhead after reload.
+    // Warmup audio uses absolute_sample_pos % loop; this avoids a stale playhead after reload.
     m_processor.reset_timeline_and_transport();
 
     try_load_default_audio_from_repo(juce::File(manifest_path));
@@ -322,8 +329,11 @@ void StreamGenComponent::paint(juce::Graphics& g)
 
 void StreamGenComponent::timerCallback()
 {
+    auto& sched_for_timer = m_processor.scheduler();
+    const bool worker_busy = sched_for_timer.status.worker_busy.load(std::memory_order_relaxed);
+
     int sr = m_processor.current_sample_rate();
-    int64_t abs_pos = m_processor.scheduler().absolute_sample_pos();
+    int64_t abs_pos = sched_for_timer.absolute_sample_pos();
 
     static int ui_tick = 0;
     ++ui_tick;
@@ -342,7 +352,7 @@ void StreamGenComponent::timerCallback()
     m_sax_waveform.set_visible_duration(visible_seconds);
     m_drums_waveform.set_visible_duration(visible_seconds);
 
-    auto& sched = m_processor.scheduler();
+    auto& sched = sched_for_timer;
     const bool musical = sched.musical_time_enabled.load(std::memory_order_relaxed);
     const float bpm = sched.bpm.load(std::memory_order_relaxed);
     const int sig_n = sched.time_sig_numerator.load(std::memory_order_relaxed);
@@ -350,27 +360,35 @@ void StreamGenComponent::timerCallback()
     m_sax_waveform.set_time_axis_for_paint(musical, bpm, sig_n, sig_d);
     m_drums_waveform.set_time_axis_for_paint(musical, bpm, sig_n, sig_d);
 
-    if (m_processor.timeline_store() != nullptr)
-        m_timeline_paint_cache = m_processor.timeline_store()->snapshot_intersecting(
-            abs_pos, sr, visible_seconds);
-    else
-        m_timeline_paint_cache.clear();
-
-    // Waveforms: fewer horizontal buckets than panel width (stretched in paint); ~30s window with
-    // playhead at k_timeline_playhead_past_fraction (see GenerationTimelineStore.h).
-    const int panel_w = juce::jmax(1, juce::jmin(m_sax_waveform.getWidth(), m_drums_waveform.getWidth()));
-    const int wave_w = juce::jmax(1, panel_w / 2);
-    m_sax_wave_min.resize(static_cast<size_t>(wave_w));
-    m_sax_wave_max.resize(static_cast<size_t>(wave_w));
-    m_drums_wave_min.resize(static_cast<size_t>(wave_w));
-    m_drums_wave_max.resize(static_cast<size_t>(wave_w));
-    const bool drums_source_layers = m_processor.warm_start_has_audio();
-    if (drums_source_layers)
+    const bool skip_timeline_tick = worker_busy && (ui_tick % 2 != 0);
+    if (!skip_timeline_tick)
     {
-        m_drums_wave_warm_min.resize(static_cast<size_t>(wave_w));
-        m_drums_wave_warm_max.resize(static_cast<size_t>(wave_w));
-        m_drums_wave_gen_min.resize(static_cast<size_t>(wave_w));
-        m_drums_wave_gen_max.resize(static_cast<size_t>(wave_w));
+        if (m_processor.timeline_store() != nullptr)
+            m_timeline_paint_cache = m_processor.timeline_store()->snapshot_intersecting(
+                abs_pos, sr, visible_seconds);
+        else
+            m_timeline_paint_cache.clear();
+    }
+
+    // Waveforms: one bucket column per panel pixel (capped); ~30s window with playhead at
+    // k_timeline_playhead_past_fraction (see GenerationTimelineStore.h).
+    constexpr int k_waveform_buckets_max = 2048;
+    const int panel_w = juce::jmax(1, juce::jmin(m_sax_waveform.getWidth(), m_drums_waveform.getWidth()));
+    const int wave_w = juce::jmin(k_waveform_buckets_max, panel_w);
+    if (wave_w != m_waveform_bucket_width)
+    {
+        m_waveform_bucket_width = wave_w;
+        const size_t w = static_cast<size_t>(wave_w);
+        m_sax_wave_min.resize(w);
+        m_sax_wave_max.resize(w);
+        m_drums_wave_min.resize(w);
+        m_drums_wave_max.resize(w);
+        m_drums_wave_warm_min.resize(w);
+        m_drums_wave_warm_max.resize(w);
+        m_drums_wave_gen_min.resize(w);
+        m_drums_wave_gen_max.resize(w);
+        m_drums_wave_hold_min.resize(w);
+        m_drums_wave_hold_max.resize(w);
     }
 
     m_processor.fill_recent_input_waveform_buckets(
@@ -386,43 +404,35 @@ void StreamGenComponent::timerCallback()
 
     m_processor.fill_recent_output_waveform_buckets(
         visible_samples, wave_w, m_drums_wave_min.data(), m_drums_wave_max.data());
-    if (drums_source_layers)
-    {
-        m_processor.fill_recent_drums_source_buckets(
-            visible_samples,
-            wave_w,
-            m_drums_wave_warm_min.data(),
-            m_drums_wave_warm_max.data(),
-            m_drums_wave_gen_min.data(),
-            m_drums_wave_gen_max.data());
-        m_drums_waveform.update(
-            m_drums_wave_min.data(),
-            m_drums_wave_max.data(),
-            wave_w,
-            abs_pos,
-            sr,
-            &m_timeline_paint_cache,
-            TimelineWaveRole::DrumsOutput,
-            m_drums_wave_warm_min.data(),
-            m_drums_wave_warm_max.data(),
-            m_drums_wave_gen_min.data(),
-            m_drums_wave_gen_max.data());
-    }
-    else
-    {
-        m_drums_waveform.update(
-            m_drums_wave_min.data(),
-            m_drums_wave_max.data(),
-            wave_w,
-            abs_pos,
-            sr,
-            &m_timeline_paint_cache,
-            TimelineWaveRole::DrumsOutput);
-    }
+    m_processor.fill_recent_drums_source_buckets(
+        visible_samples,
+        wave_w,
+        m_drums_wave_warm_min.data(),
+        m_drums_wave_warm_max.data(),
+        m_drums_wave_gen_min.data(),
+        m_drums_wave_gen_max.data(),
+        m_drums_wave_hold_min.data(),
+        m_drums_wave_hold_max.data(),
+        &m_timeline_paint_cache);
+    m_drums_waveform.update(
+        m_drums_wave_min.data(),
+        m_drums_wave_max.data(),
+        wave_w,
+        abs_pos,
+        sr,
+        &m_timeline_paint_cache,
+        TimelineWaveRole::DrumsOutput,
+        m_drums_wave_warm_min.data(),
+        m_drums_wave_warm_max.data(),
+        m_drums_wave_gen_min.data(),
+        m_drums_wave_gen_max.data(),
+        m_drums_wave_hold_min.data(),
+        m_drums_wave_hold_max.data());
 
+    const bool drums_source_layers = m_processor.warmup_audio_has_audio();
     const juce::String drums_wave_legend = drums_source_layers
-        ? juce::String("  orange=warm  blue=model")
-        : juce::String();
+        ? juce::String("  orange=warmup  cyan=model  magenta=loop hold")
+        : juce::String("  cyan=model  magenta=loop hold");
 
     // Source tags
     if (m_processor.simulation_playing.load(std::memory_order_relaxed))
@@ -430,18 +440,23 @@ void StreamGenComponent::timerCallback()
     else
         m_sax_waveform.set_source_tag("[LIVE]");
 
-    if (m_processor.warm_start_playing.load(std::memory_order_relaxed))
-        m_drums_waveform.set_source_tag("[WARM]" + drums_wave_legend);
-    else if (m_processor.warm_start_has_audio())
-        m_drums_waveform.set_source_tag("[WARM ·]" + drums_wave_legend);
+    const bool drums_hold = m_processor.drums_output_from_last_gen_hold.load(std::memory_order_relaxed);
+    juce::String drums_tag;
+    if (m_processor.warmup_audio_playing.load(std::memory_order_relaxed))
+        drums_tag = "[WARMUP]" + drums_wave_legend;
+    else if (m_processor.warmup_audio_has_audio())
+        drums_tag = "[WARMUP ·]" + drums_wave_legend;
     else
     {
         int64_t gen_count = m_processor.scheduler().status.generation_count.load(std::memory_order_relaxed);
         if (gen_count > 0)
-            m_drums_waveform.set_source_tag("[GEN #" + juce::String(gen_count) + "]");
+            drums_tag = "[GEN #" + juce::String(gen_count) + "]";
         else
-            m_drums_waveform.set_source_tag("[IDLE]");
+            drums_tag = "[IDLE]";
     }
+    if (drums_hold)
+        drums_tag += " [HOLD]";
+    m_drums_waveform.set_source_tag(drums_tag);
 
     // Update timing
     if (m_worker != nullptr)
@@ -478,6 +493,10 @@ void StreamGenComponent::timerCallback()
         }
     }
 
+    juce::String phase_label = "[idle]";
+    if (m_worker != nullptr)
+        phase_label = m_worker->inference_phase_display();
+
     m_gen_status.update(
         status.queue_depth.load(std::memory_order_relaxed),
         status.generation_count.load(std::memory_order_relaxed),
@@ -485,7 +504,9 @@ void StreamGenComponent::timerCallback()
         status.last_job_id.load(std::memory_order_relaxed),
         status.worker_busy.load(std::memory_order_relaxed),
         source_label,
-        land_timeline);
+        land_timeline,
+        drums_hold,
+        phase_label);
 }
 
 void StreamGenComponent::show_audio_settings()
@@ -514,26 +535,10 @@ void StreamGenComponent::show_simulation_window()
     m_simulation_window->toFront(true);
 }
 
-void StreamGenComponent::show_operator_dashboard()
-{
-    if (m_operator_window == nullptr)
-    {
-        m_operator_window = std::make_unique<OperatorDashboardWindow>(
-            m_processor,
-            [this]()
-            {
-                return m_worker.get();
-            });
-    }
-
-    m_operator_window->setVisible(true);
-    m_operator_window->toFront(true);
-}
-
-void StreamGenComponent::load_warm_start()
+void StreamGenComponent::load_warmup_audio()
 {
     auto chooser = std::make_shared<juce::FileChooser>(
-        "Load Warm Start WAV", juce::File(), "*.wav;*.aif;*.aiff;*.flac");
+        "Load Warmup Audio WAV", juce::File(), "*.wav;*.aif;*.aiff;*.flac");
 
     chooser->launchAsync(juce::FileBrowserComponent::openMode
                          | juce::FileBrowserComponent::canSelectFiles,
@@ -542,15 +547,15 @@ void StreamGenComponent::load_warm_start()
             auto result = fc.getResult();
             if (result == juce::File())
             {
-                DBG("StreamGenComponent: warm-start file chooser cancelled");
+                DBG("StreamGenComponent: warmup audio file chooser cancelled");
                 return;
             }
 
-            if (m_processor.load_warm_start(result, false))
+            if (m_processor.load_warmup_audio(result, false))
             {
-                m_controls.set_warm_route_enabled(true);
-                m_controls.set_warm_route_toggle(false, juce::dontSendNotification);
-                DBG("StreamGenComponent: warm-start loaded: " + result.getFileName());
+                m_controls.set_warmup_audio_route_enabled(true);
+                m_controls.set_warmup_audio_route_toggle(false, juce::dontSendNotification);
+                DBG("StreamGenComponent: warmup audio loaded: " + result.getFileName());
             }
         });
 }
@@ -593,26 +598,26 @@ void StreamGenComponent::try_load_default_audio_from_repo(const juce::File& mani
         streamgen_log("try_load_default_audio: repo_root=" + repo_root.getFullPathName());
     }
 
-    juce::File warm_file = repo_root.getChildFile(k_default_warm_rel);
+    juce::File warm_file = repo_root.getChildFile(k_default_warmup_audio_rel);
     juce::File sim_file = repo_root.getChildFile(k_default_sim_rel);
 
     bool loaded_any = false;
 
     if (warm_file.existsAsFile())
     {
-        if (m_processor.load_warm_start(warm_file, false))
+        if (m_processor.load_warmup_audio(warm_file, false))
         {
-            m_controls.set_warm_route_enabled(true);
-            m_controls.set_warm_route_toggle(false, juce::dontSendNotification);
+            m_controls.set_warmup_audio_route_enabled(true);
+            m_controls.set_warmup_audio_route_toggle(false, juce::dontSendNotification);
             loaded_any = true;
-            DBG("StreamGenComponent: default warm-start loaded: " + warm_file.getFileName());
-            streamgen_log("default warm: " + warm_file.getFullPathName());
+            DBG("StreamGenComponent: default warmup audio loaded: " + warm_file.getFileName());
+            streamgen_log("default warmup audio: " + warm_file.getFullPathName());
         }
     }
     else
     {
-        DBG("StreamGenComponent: default warm-start not found at " + warm_file.getFullPathName());
-        streamgen_log("default warm missing: " + warm_file.getFullPathName());
+        DBG("StreamGenComponent: default warmup audio not found at " + warm_file.getFullPathName());
+        streamgen_log("default warmup audio missing: " + warm_file.getFullPathName());
     }
 
     if (sim_file.existsAsFile())

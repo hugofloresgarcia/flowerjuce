@@ -79,9 +79,9 @@ public:
     std::atomic<float> hop_beats{4.0f};
     /// Land delay in beats (legacy mirror of schedule_delay_bars * time_sig_numerator).
     std::atomic<float> schedule_delay_beats{0.0f};
-    /// Hop length in **bars** (musical mode). Allowed: 0.5, 1, 2 (fraction of a bar with current numerator).
+    /// Hop length in **bars** (musical mode). UI: 0.5, 1–4 bars (fraction of a bar with current numerator).
     std::atomic<float> hop_bars{1.0f};
-    /// Output land delay in **whole bars** after keep_end (musical mode). Allowed: 0, 1, 2.
+    /// Output land delay in **whole bars** after keep_end (musical mode). UI: 0–4.
     std::atomic<float> schedule_delay_bars{0.0f};
     /// Launch quantization: 0 = off; else enqueue keep_end snaps forward to multiples of N beats.
     std::atomic<int> quantize_launch_beats{0};

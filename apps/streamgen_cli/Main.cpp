@@ -188,7 +188,7 @@ static void print_usage(const char* prog)
     std::cerr << "Usage: " << prog << " [options]\n"
               << "  --manifest FILE          Path to zenon_pipeline_manifest.json (REQUIRED)\n"
               << "  --input FILE             Input sax/synth WAV file (REQUIRED)\n"
-              << "  --warm-start FILE        Warm-start drums WAV\n"
+              << "  --warmup-audio FILE      Warmup-audio drums WAV\n"
               << "  --output FILE            Output drums WAV (default: output_streamgen.wav)\n"
               << "  --timing-json FILE       Write per-generation timing JSON\n"
               << "  --prompt TEXT             Text prompt (default: percussion)\n"
@@ -210,7 +210,7 @@ int main(int argc, char* argv[])
 
     std::string manifest_path;
     std::string input_file;
-    std::string warm_start_file;
+    std::string warmup_audio_file;
     std::string output_file = "output_streamgen.wav";
     std::string timing_json_file;
     std::string prompt = "percussion";
@@ -230,7 +230,7 @@ int main(int argc, char* argv[])
         std::string arg = argv[i];
         if (arg == "--manifest" && i + 1 < argc) manifest_path = argv[++i];
         else if (arg == "--input" && i + 1 < argc) input_file = argv[++i];
-        else if (arg == "--warm-start" && i + 1 < argc) warm_start_file = argv[++i];
+        else if (arg == "--warmup-audio" && i + 1 < argc) warmup_audio_file = argv[++i];
         else if (arg == "--output" && i + 1 < argc) output_file = argv[++i];
         else if (arg == "--timing-json" && i + 1 < argc) timing_json_file = argv[++i];
         else if (arg == "--prompt" && i + 1 < argc) prompt = argv[++i];
@@ -287,13 +287,13 @@ int main(int argc, char* argv[])
     int crossfade_samples = crossfade_ms * 44100 / 1000;
     worker.crossfade_samples.store(crossfade_samples, std::memory_order_relaxed);
 
-    // --- Load warm-start (optional) ---
-    if (!warm_start_file.empty())
+    // --- Load warmup audio (optional) ---
+    if (!warmup_audio_file.empty())
     {
-        juce::File ws_file(warm_start_file);
-        assert(ws_file.existsAsFile() && "Warm-start file not found");
-        processor.load_warm_start(ws_file);
-        std::cout << "Warm-start loaded: " << warm_start_file << std::endl;
+        juce::File ws_file(warmup_audio_file);
+        assert(ws_file.existsAsFile() && "Warmup audio file not found");
+        processor.load_warmup_audio(ws_file);
+        std::cout << "Warmup audio loaded: " << warmup_audio_file << std::endl;
     }
 
     // --- Streaming loop ---

@@ -1,6 +1,7 @@
 #include "sao_inference/InpaintSampler.h"
-#include <cmath>
 #include <cassert>
+#include <cmath>
+#include <cstring>
 #include <iostream>
 
 namespace sao {
@@ -52,48 +53,50 @@ std::vector<float> sample_euler_cfg_inpaint(
 
     std::vector<float> x = noise;
 
+    std::vector<float> batch_x(static_cast<size_t>(2 * latent_size));
+    std::vector<float> batch_t(2);
+    // First half: cond cross-attn; second half: zeros (uncond slot for CFG).
+    std::vector<float> batch_cross_attn(static_cast<size_t>(2 * seq_len * cond_dim), 0.0f);
+    const size_t cross_bytes = static_cast<size_t>(seq_len * cond_dim) * sizeof(float);
+    std::memcpy(batch_cross_attn.data(), conditioning.cross_attn_cond.data(), cross_bytes);
+
+    std::vector<float> batch_global(static_cast<size_t>(2 * cond_dim));
+    const size_t global_bytes = static_cast<size_t>(cond_dim) * sizeof(float);
+    std::memcpy(batch_global.data(), conditioning.global_embed.data(), global_bytes);
+    std::memcpy(batch_global.data() + cond_dim, conditioning.global_embed.data(), global_bytes);
+
+    std::vector<InputAddTensor> batch_input_add;
+    batch_input_add.reserve(conditioning.input_add.size());
+    for (const auto& add : conditioning.input_add) {
+        InputAddTensor batch_add;
+        batch_add.name = add.name;
+        batch_add.channels = add.channels;
+        const int add_size = add.channels * T;
+        batch_add.data.resize(static_cast<size_t>(2 * add_size));
+        const size_t add_bytes = static_cast<size_t>(add_size) * sizeof(float);
+        std::memcpy(batch_add.data.data(), add.data.data(), add_bytes);
+        std::memcpy(batch_add.data.data() + add_size, add.data.data(), add_bytes);
+        batch_input_add.push_back(std::move(batch_add));
+    }
+
+    std::vector<float> v(static_cast<size_t>(latent_size));
+
     for (int i = 0; i < config.steps; ++i) {
         float t_curr = t_schedule[i];
         float t_prev = t_schedule[i + 1];
         float dt = t_prev - t_curr;
 
-        std::vector<float> batch_x(2 * latent_size);
-        std::copy(x.begin(), x.end(), batch_x.begin());
-        std::copy(x.begin(), x.end(), batch_x.begin() + latent_size);
+        const size_t latent_bytes = static_cast<size_t>(latent_size) * sizeof(float);
+        std::memcpy(batch_x.data(), x.data(), latent_bytes);
+        std::memcpy(batch_x.data() + latent_size, x.data(), latent_bytes);
 
-        std::vector<float> batch_t = {t_curr, t_curr};
-
-        std::vector<float> batch_cross_attn(2 * seq_len * cond_dim, 0.0f);
-        std::copy(conditioning.cross_attn_cond.begin(),
-                  conditioning.cross_attn_cond.end(),
-                  batch_cross_attn.begin());
-
-        std::vector<float> batch_global(2 * cond_dim);
-        std::copy(conditioning.global_embed.begin(),
-                  conditioning.global_embed.end(),
-                  batch_global.begin());
-        std::copy(conditioning.global_embed.begin(),
-                  conditioning.global_embed.end(),
-                  batch_global.begin() + cond_dim);
-
-        std::vector<InputAddTensor> batch_input_add;
-        for (const auto& add : conditioning.input_add) {
-            InputAddTensor batch_add;
-            batch_add.name = add.name;
-            batch_add.channels = add.channels;
-            int add_size = add.channels * T;
-            batch_add.data.resize(2 * add_size);
-            std::copy(add.data.begin(), add.data.end(), batch_add.data.begin());
-            std::copy(add.data.begin(), add.data.end(), batch_add.data.begin() + add_size);
-            batch_input_add.push_back(std::move(batch_add));
-        }
+        batch_t[0] = t_curr;
+        batch_t[1] = t_curr;
 
         auto batch_output = dit.forward(
             batch_x, batch_t, batch_cross_attn, batch_global,
             batch_input_add, 2, seq_len, C, T, cond_dim
         );
-
-        std::vector<float> v(latent_size);
         for (int j = 0; j < latent_size; ++j) {
             float cond_out = batch_output[j];
             float uncond_out = batch_output[latent_size + j];

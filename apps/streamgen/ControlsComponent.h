@@ -30,11 +30,10 @@ public:
     std::function<void(int, int)> on_time_signature_changed;
     std::function<void(int)> on_quantize_launch_changed;
     std::function<void(bool)> on_loop_last_generation_changed;
-    std::function<void()> on_warm_start_clicked;
-    std::function<void(bool)> on_warm_route_toggled;
+    std::function<void()> on_warmup_audio_clicked;
+    std::function<void(bool)> on_warmup_audio_route_toggled;
     std::function<void()> on_simulate_clicked;
     std::function<void()> on_audio_settings_clicked;
-    std::function<void()> on_operator_clicked;
     std::function<void()> on_reset_clicked;
     std::function<void(bool)> on_generation_enabled_changed;
     std::function<void(bool)> on_click_track_enabled_changed;
@@ -46,12 +45,15 @@ public:
     /// Sync musical toggle, BPM, sig, quantize, hop, land delay, and loop-last toggle (no callbacks).
     void sync_time_mode_from_scheduler(const GenerationScheduler& sched, bool loop_last_generation_enabled);
 
+    /// Set loop-last-gen toggle from code (e.g. auto-off when generation disabled).
+    void set_loop_last_generation_toggle(bool on, juce::NotificationType notification);
+
     /// After toggling musical mode, refresh hop/land controls from scheduler.
     void sync_hop_delay_controls_from_scheduler(const GenerationScheduler& sched);
 
-    void set_warm_route_toggle(bool route_to_output, juce::NotificationType notification);
+    void set_warmup_audio_route_toggle(bool route_to_output, juce::NotificationType notification);
 
-    void set_warm_route_enabled(bool enabled);
+    void set_warmup_audio_route_enabled(bool enabled);
 
     /// Sync click metronome toggle and volume from processor atomics (no callbacks).
     void sync_click_track_from_processor(const StreamGenProcessor& processor);
@@ -108,11 +110,10 @@ private:
     juce::GroupComponent m_group_session{"Session & I/O"};
     juce::ToggleButton m_generation_toggle{"Enable Generation"};
     juce::ToggleButton m_loop_last_gen_toggle{"Loop last gen"};
-    juce::TextButton m_warm_start_button{"Load Warm Start"};
-    juce::ToggleButton m_warm_route_toggle{"Warm out"};
+    juce::TextButton m_warmup_audio_button{"Load Warmup Audio"};
+    juce::ToggleButton m_warmup_audio_route_toggle{"Warmup out"};
     juce::TextButton m_simulate_button{"Simulate..."};
     juce::TextButton m_audio_settings_button{"Audio Settings"};
-    juce::TextButton m_operator_button{"Operator"};
     juce::TextButton m_reset_button{"Reset"};
 };
 

@@ -2,6 +2,7 @@
 
 #include "TimeRuler.h"
 #include "GenerationScheduler.h"
+#include "GenerationTimelineStore.h"
 #include "AudioThreadTelemetry.h"
 
 #include <juce_audio_devices/juce_audio_devices.h>
@@ -14,7 +15,13 @@
 
 namespace streamgen {
 
-class GenerationTimelineStore;
+/// One stereo sample from the drums output ring, with metadata for loop-hold substitution.
+struct DrumsRingSample {
+    float left = 0.0f;
+    float right = 0.0f;
+    /// True when `left`/`right` were taken from the last completed generation snapshot loop.
+    bool from_last_gen_hold = false;
+};
 
 /// Audio engine for StreamGen Live.
 ///
@@ -90,28 +97,32 @@ public:
     /// Total length of the loaded simulation file (in samples).
     std::atomic<int64_t> simulation_total_samples{0};
 
-    // --- Warm-start ---
+    // --- Warmup audio ---
 
-    /// Load a WAV file as the warm-start drum track. Timeline positions use the **device** sample
+    /// Load a WAV file as the warmup-audio drum track. Timeline positions use the **device** sample
     /// clock (same as the metronome); file frames are indexed with `timeline * file_sr / device_sr`
     /// so 120 BPM content authored at 44100 Hz stays on-grid when the interface runs at 48 kHz.
     ///
     /// Args:
     ///     file: The WAV file to load.
-    ///     start_playback: If true, route warm-start audio to the output immediately.
-    bool load_warm_start(const juce::File& file, bool start_playback = true);
+    ///     start_playback: If true, route warmup audio to the output immediately.
+    bool load_warmup_audio(const juce::File& file, bool start_playback = true);
 
-    /// Route loaded warm-start audio to the output (no-op if no warm buffer loaded).
-    void set_warm_start_playing(bool playing);
+    /// Route loaded warmup audio to the output (no-op if no warmup buffer loaded).
+    void set_warmup_audio_playing(bool playing);
 
-    /// True if a warm-start file has been loaded (length > 0).
-    bool warm_start_has_audio() const;
+    /// True if warmup audio has been loaded (length > 0).
+    bool warmup_audio_has_audio() const;
 
-    std::atomic<bool> warm_start_playing{false};
-    std::atomic<bool> warm_start_looping{true};
+    std::atomic<bool> warmup_audio_playing{false};
+    std::atomic<bool> warmup_audio_looping{true};
 
     /// When true, output mixer repeats the last completed generation for ring frames that are still silent.
     std::atomic<bool> loop_last_generation{true};
+
+    /// True for the last processed audio block if any drums output sample used last-gen loop hold.
+    /// Written by the audio callback only; read from the UI thread.
+    std::atomic<bool> drums_output_from_last_gen_hold{false};
 
     /// When true and musical time is enabled, simulation Play snaps file position to a bar boundary.
     std::atomic<bool> simulation_snap_to_bar_on_play{true};
@@ -160,7 +171,7 @@ public:
 
     /// Fill per-pixel min/max buckets for the last `duration_samples` of audio (mono).
     ///
-    /// Ring reads are subsampled within each bucket (bounded reads per column). Call from the message thread.
+    /// Every sample in each bucket's time range is read from the ring (true min/max). Call from the message thread.
     /// `out_min` / `out_max` must hold `num_buckets` elements.
     ///
     /// Args:
@@ -173,15 +184,24 @@ public:
     /// Same as fill_recent_input_waveform_buckets for the drums monitor ring (stereo downmixed to mono).
     void fill_recent_output_waveform_buckets(int duration_samples, int num_buckets, float* out_min, float* out_max);
 
-    /// Drums monitor split by source: warm-start file (1) vs model output_ring (2); see m_drums_origin_ring.
+    /// Drums monitor split by source: warmup (1), model from ring (2), loop-hold snapshot (3); see m_drums_origin_ring.
     /// Arrays must hold num_buckets elements. Same visible window as fill_recent_output_waveform_buckets.
+    /// When gen_land_jobs is non-null and non-empty, samples with origin gen are bucketed only if they fall inside a
+    /// completed job land interval [output_start_sample(), output_start_sample() + gen_samples); otherwise they
+    /// are omitted from gen (and hold/warm buckets) so the cyan trace aligns with scheduled lands.
     void fill_recent_drums_source_buckets(
         int duration_samples,
         int num_buckets,
         float* warm_min,
         float* warm_max,
         float* gen_min,
-        float* gen_max);
+        float* gen_max,
+        float* hold_min,
+        float* hold_max,
+        const std::vector<JobTimelineRecord>* gen_land_jobs = nullptr);
+
+    /// Zero output and drums-monitor rings; clear last-generation hold snapshot. Message thread / UI.
+    void clear_drums_output_buffers();
 
     // --- Gain controls ---
     std::atomic<float> sax_gain{1.0f};
@@ -202,8 +222,8 @@ public:
     /// Native sample rate of the loaded simulation WAV (Hz), for UI time/bar readouts.
     int simulation_file_native_sample_rate_hz() const;
 
-    /// Native sample rate of the loaded warm-start WAV (Hz).
-    int warm_file_native_sample_rate_hz() const;
+    /// Native sample rate of the loaded warmup-audio WAV (Hz).
+    int warmup_audio_file_native_sample_rate_hz() const;
 
     /// RT-safe audio levels; read from UI/logger threads via copy_snapshot().
     AudioThreadTelemetry& audio_telemetry() { return m_audio_telemetry; }
@@ -219,6 +239,7 @@ private:
     void write_sax_to_ring_at(const float* mono_input, int num_samples, int64_t abs_block_start);
     void read_drums_from_ring(float* left, float* right, int num_samples);
     void output_ring_sample_at(int64_t absolute_sample, float& out_left, float& out_right) const;
+    DrumsRingSample fetch_drums_ring_sample(int64_t absolute_sample) const;
     void commit_last_generation_snapshot(
         const std::vector<float>& gen_row_major_stereo,
         int64_t output_start_sample,
@@ -241,7 +262,7 @@ private:
     std::vector<float> m_output_ring;  // generated drums (worker writes; warm path reads only)
     /// Last drum bus (pre-drums_gain) for UI waveform — audio thread only, never touched by worker.
     std::vector<float> m_drums_monitor_ring;
-    /// Per ring frame: 0 = silence, 1 = warm-start file, 2 = model (output_ring). Audio thread writes only.
+    /// Per ring frame: 0 = silence, 1 = warmup file, 2 = model from ring, 3 = loop-last hold snapshot. Audio thread only.
     std::vector<uint8_t> m_drums_origin_ring;
 
     // Simulation file data (mono at native file rate). Phase keeps scrub offset vs timeline.
@@ -251,7 +272,7 @@ private:
     std::atomic<int> m_sim_native_sample_rate_hz{44100};
     juce::String m_simulation_display_name;
 
-    // Warm-start data (stereo interleaved at native file rate)
+    // Warmup audio (stereo interleaved at native file rate)
     mutable std::mutex m_warm_mutex;
     std::vector<float> m_warm_audio;
     int64_t m_warm_length_frames = 0;
