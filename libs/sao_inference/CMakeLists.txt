@@ -7,6 +7,9 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 include(FetchContent)
 
 option(SAO_ENABLE_MLX "Link Apple MLX for Metal Zenon VAE (Apple Silicon macOS only)" OFF)
+option(SAO_FETCH_ONNXRUNTIME_GPU
+    "On Linux, FetchContent downloads onnxruntime-linux-x64-gpu (CUDA) instead of CPU-only. Ignored on other platforms."
+    OFF)
 
 # --- Dependencies ---
 
@@ -39,7 +42,12 @@ if(NOT ONNXRUNTIME_INCLUDE_DIR OR NOT ONNXRUNTIME_LIBRARY)
             set(ONNXRUNTIME_PLATFORM "osx-x86_64")
         endif()
     elseif(UNIX)
-        set(ONNXRUNTIME_PLATFORM "linux-x64")
+        if(SAO_FETCH_ONNXRUNTIME_GPU)
+            set(ONNXRUNTIME_PLATFORM "linux-x64-gpu")
+            message(STATUS "ONNX Runtime FetchContent: linux-x64-gpu (CUDA execution provider)")
+        else()
+            set(ONNXRUNTIME_PLATFORM "linux-x64")
+        endif()
     else()
         message(FATAL_ERROR "Unsupported platform for ONNX Runtime auto-download")
     endif()

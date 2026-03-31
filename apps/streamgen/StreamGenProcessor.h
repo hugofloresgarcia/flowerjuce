@@ -74,6 +74,12 @@ public:
     /// Short name of the last loaded simulation file (for UI). Empty if none.
     juce::String simulation_display_name() const;
 
+    /// Set simulation file playback position (samples). Thread-safe for UI; matches `simulation_position`.
+    void set_simulation_playback_sample(int64_t sample);
+
+    /// Snap simulation playback to the start of the current bar in file-time (uses BPM and time signature).
+    void snap_simulation_position_to_bar_grid();
+
     std::atomic<bool> simulation_playing{false};
     std::atomic<bool> simulation_looping{false};
     std::atomic<float> simulation_speed{1.0f};
@@ -86,8 +92,8 @@ public:
 
     // --- Warm-start ---
 
-    /// Load a WAV file as the warm-start drum track.
-    /// Zero-padded at the front if shorter than model window.
+    /// Load a WAV file as the warm-start drum track. Playback index is absolute_sample_pos %
+    /// file_length (stereo frame = one L,R pair). WAV sample 0 aligns with timeline sample 0.
     ///
     /// Args:
     ///     file: The WAV file to load.
@@ -102,6 +108,17 @@ public:
 
     std::atomic<bool> warm_start_playing{false};
     std::atomic<bool> warm_start_looping{true};
+
+    /// When true, output mixer repeats the last completed generation for ring frames that are still silent.
+    std::atomic<bool> loop_last_generation{true};
+
+    /// When true and musical time is enabled, simulation Play snaps file position to a bar boundary.
+    std::atomic<bool> simulation_snap_to_bar_on_play{true};
+
+    /// Metronome: quarter-note clicks when musical time is on (downbeat uses a louder impulse).
+    std::atomic<bool> click_track_enabled{false};
+    /// Linear gain 0..1 applied to click impulses on the main output bus.
+    std::atomic<float> click_track_volume{0.35f};
 
     // --- Worker thread interface ---
 
@@ -193,7 +210,15 @@ private:
     void rebuild_ring_buffers(int ring_sample_rate);
     void write_sax_to_ring(const float* mono_input, int num_samples);
     void read_drums_from_ring(float* left, float* right, int num_samples);
+    void output_ring_sample_at(int64_t absolute_sample, float& out_left, float& out_right) const;
+    void commit_last_generation_snapshot(
+        const std::vector<float>& gen_row_major_stereo,
+        int64_t output_start_sample,
+        int64_t num_samples);
     int64_t absolute_to_ring_index(int64_t absolute_sample) const;
+
+    void rebuild_click_impulses();
+    void mix_click_track_into(float* left, float* right, int num_samples, int64_t block_start_sample);
 
     ModelConstants m_constants;
     std::unique_ptr<GenerationTimelineStore> m_timeline;
@@ -221,7 +246,17 @@ private:
     mutable std::mutex m_warm_mutex;
     std::vector<float> m_warm_audio;
     int64_t m_warm_length_frames = 0;
-    int64_t m_warm_playback_pos = 0;
+
+    /// Last completed generation (row-major stereo: [L...][R...]), for loop-hold when ring is silent.
+    mutable std::mutex m_last_gen_mutex;
+    std::vector<float> m_last_gen_row_major;
+    int64_t m_last_gen_output_start_sample = 0;
+    int64_t m_last_gen_num_samples = 0;
+    std::atomic<bool> m_last_gen_snapshot_valid{false};
+
+    /// Short band-limited impulses for RT mixing (audio thread read-only after rebuild in aboutToStart).
+    std::vector<float> m_click_impulse_beat;
+    std::vector<float> m_click_impulse_downbeat;
 
     juce::AudioFormatManager m_format_manager;
 };

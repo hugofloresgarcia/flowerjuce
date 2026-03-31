@@ -65,6 +65,8 @@ static juce::String format_dashboard(
     out << "quantize_launch_beats: " << sched.quantize_launch_beats.load(std::memory_order_relaxed) << "\n";
     if (sched.musical_time_enabled.load(std::memory_order_relaxed))
     {
+        out << "hop (bars): " << std::setprecision(2) << sched.hop_bars.load(std::memory_order_relaxed)
+            << "  land delay (bars): " << sched.schedule_delay_bars.load(std::memory_order_relaxed) << "\n";
         out << "hop (beats): " << std::setprecision(3) << sched.hop_beats.load(std::memory_order_relaxed)
             << "  schedule_delay (beats): " << sched.schedule_delay_beats.load(std::memory_order_relaxed) << "\n";
     }

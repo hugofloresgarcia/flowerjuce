@@ -185,12 +185,13 @@ public:
                    StreamGenProcessor& processor,
                    juce::AudioDeviceManager& device_manager)
             : juce::DocumentWindow(name, juce::Colours::black,
-                                   juce::DocumentWindow::allButtons)
+                                   juce::DocumentWindow::allButtons),
+              m_tooltip(this, 400)
         {
             setUsingNativeTitleBar(true);
             setContentOwned(new StreamGenComponent(processor, device_manager), true);
             setResizable(true, true);
-            setResizeLimits(800, 620, 2400, 1600);
+            setResizeLimits(880, 660, 2400, 1600);
             centreWithSize(1000, 720);
             setVisible(true);
         }
@@ -199,6 +200,9 @@ public:
         {
             juce::JUCEApplication::getInstance()->systemRequestedQuit();
         }
+
+    private:
+        juce::TooltipWindow m_tooltip;
     };
 
 private:

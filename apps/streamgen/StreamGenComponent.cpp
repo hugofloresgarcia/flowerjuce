@@ -4,6 +4,34 @@
 
 namespace streamgen {
 
+namespace {
+
+constexpr const char* k_default_warm_rel = "tests/streamgen_test_audio/drums_120bpm.wav";
+constexpr const char* k_default_sim_rel = "tests/streamgen_test_audio/synth_120bpm_medium.wav";
+
+/// Walk parents of `manifest_path` until `tests/streamgen_test_audio/` exists (repo layout).
+juce::File find_repo_root_with_streamgen_tests(const juce::File& manifest_path)
+{
+    juce::File start(manifest_path.getFullPathName());
+    if (!start.exists())
+        return {};
+    if (!start.isDirectory())
+        start = start.getParentDirectory();
+    for (int depth = 0; depth < 40; ++depth)
+    {
+        const juce::File test_audio_dir = start.getChildFile("tests/streamgen_test_audio");
+        if (test_audio_dir.isDirectory())
+            return start;
+        const juce::File parent = start.getParentDirectory();
+        if (parent == start)
+            break;
+        start = parent;
+    }
+    return {};
+}
+
+} // namespace
+
 StreamGenComponent::StreamGenComponent(
     StreamGenProcessor& processor,
     juce::AudioDeviceManager& device_manager)
@@ -37,6 +65,14 @@ StreamGenComponent::StreamGenComponent(
         m_processor.scheduler().hop_seconds.store(val, std::memory_order_relaxed);
     };
 
+    m_controls.on_hop_bars_changed = [this](float bars)
+    {
+        auto& sched = m_processor.scheduler();
+        sched.hop_bars.store(bars, std::memory_order_relaxed);
+        const int bpb = juce::jmax(1, sched.time_sig_numerator.load(std::memory_order_relaxed));
+        sched.hop_beats.store(bars * static_cast<float>(bpb), std::memory_order_relaxed);
+    };
+
     m_controls.on_keep_ratio_changed = [this](float val)
     {
         m_processor.scheduler().keep_ratio.store(val, std::memory_order_relaxed);
@@ -57,20 +93,27 @@ StreamGenComponent::StreamGenComponent(
         m_processor.scheduler().schedule_delay_seconds.store(val, std::memory_order_relaxed);
     };
 
-    m_controls.on_hop_beats_changed = [this](float val)
+    m_controls.on_schedule_delay_bars_changed = [this](float bars)
     {
-        m_processor.scheduler().hop_beats.store(val, std::memory_order_relaxed);
-    };
-
-    m_controls.on_schedule_delay_beats_changed = [this](float val)
-    {
-        m_processor.scheduler().schedule_delay_beats.store(val, std::memory_order_relaxed);
+        auto& sched = m_processor.scheduler();
+        sched.schedule_delay_bars.store(bars, std::memory_order_relaxed);
+        const int bpb = juce::jmax(1, sched.time_sig_numerator.load(std::memory_order_relaxed));
+        sched.schedule_delay_beats.store(bars * static_cast<float>(bpb), std::memory_order_relaxed);
     };
 
     m_controls.on_musical_time_changed = [this](bool musical)
     {
-        m_processor.scheduler().musical_time_enabled.store(musical, std::memory_order_relaxed);
-        m_controls.sync_hop_delay_sliders_from_scheduler(m_processor.scheduler());
+        auto& sched = m_processor.scheduler();
+        sched.musical_time_enabled.store(musical, std::memory_order_relaxed);
+        if (musical && sched.quantize_launch_beats.load(std::memory_order_relaxed) == 0)
+        {
+            const int bar_beats = juce::jmax(1, sched.time_sig_numerator.load(std::memory_order_relaxed));
+            sched.quantize_launch_beats.store(bar_beats, std::memory_order_relaxed);
+        }
+        m_controls.sync_time_mode_from_scheduler(
+            sched,
+            m_processor.loop_last_generation.load(std::memory_order_relaxed));
+        m_controls.sync_click_track_from_processor(m_processor);
     };
 
     m_controls.on_bpm_changed = [this](float val)
@@ -80,8 +123,29 @@ StreamGenComponent::StreamGenComponent(
 
     m_controls.on_time_signature_changed = [this](int n, int d)
     {
-        m_processor.scheduler().time_sig_numerator.store(n, std::memory_order_relaxed);
-        m_processor.scheduler().time_sig_denominator.store(d, std::memory_order_relaxed);
+        auto& sched = m_processor.scheduler();
+        sched.time_sig_numerator.store(n, std::memory_order_relaxed);
+        sched.time_sig_denominator.store(d, std::memory_order_relaxed);
+        const int bpb = juce::jmax(1, n);
+        const float hb = sched.hop_bars.load(std::memory_order_relaxed);
+        sched.hop_beats.store(hb * static_cast<float>(bpb), std::memory_order_relaxed);
+        const float db = sched.schedule_delay_bars.load(std::memory_order_relaxed);
+        sched.schedule_delay_beats.store(db * static_cast<float>(bpb), std::memory_order_relaxed);
+    };
+
+    m_controls.on_loop_last_generation_changed = [this](bool enabled)
+    {
+        m_processor.loop_last_generation.store(enabled, std::memory_order_relaxed);
+    };
+
+    m_controls.on_click_track_enabled_changed = [this](bool enabled)
+    {
+        m_processor.click_track_enabled.store(enabled, std::memory_order_relaxed);
+    };
+
+    m_controls.on_click_track_volume_changed = [this](float v)
+    {
+        m_processor.click_track_volume.store(v, std::memory_order_relaxed);
     };
 
     m_controls.on_quantize_launch_changed = [this](int beats)
@@ -119,7 +183,10 @@ StreamGenComponent::StreamGenComponent(
 
     m_controls.set_warm_route_enabled(false);
 
-    m_controls.sync_time_mode_from_scheduler(m_processor.scheduler());
+    m_controls.sync_time_mode_from_scheduler(
+        m_processor.scheduler(),
+        m_processor.loop_last_generation.load(std::memory_order_relaxed));
+    m_controls.sync_click_track_from_processor(m_processor);
 
     setSize(1000, 720);
     startTimerHz(20);
@@ -152,13 +219,17 @@ void StreamGenComponent::load_pipeline(
         return;
     }
 
+    // While the callback is detached, zero playhead/rings/timeline so the first block sees abs=0.
+    // Warm uses absolute_sample_pos % loop; this avoids a stale playhead after reload.
+    m_processor.reset_timeline_and_transport();
+
+    try_load_default_audio_from_repo(juce::File(manifest_path));
+
     reattach_audio_callback_after_pipeline_load();
 
     m_worker->startThread(juce::Thread::Priority::high);
     DBG("StreamGenComponent: inference worker started");
     streamgen_log("load_pipeline: worker thread started");
-
-    try_load_default_audio_from_repo(juce::File(manifest_path));
 }
 
 void StreamGenComponent::reset_session()
@@ -219,8 +290,8 @@ void StreamGenComponent::resized()
 
     const int title_height = 30;
     const int sidebar_width = 160;
-    // Controls: prompt + musical row + hop/keep + steps/cfg + land delay + two button rows (~280px).
-    const int controls_height = 288;
+    // Controls: full-width prompt, (musical | inference) grid row, full-width session.
+    const int controls_height = 360;
     const int waveform_min_height = 100;
     const int mixer_width = 80;
 
@@ -484,13 +555,48 @@ void StreamGenComponent::load_warm_start()
         });
 }
 
+void StreamGenComponent::apply_default_120bpm_grid_preset()
+{
+    auto& sched = m_processor.scheduler();
+    sched.musical_time_enabled.store(true, std::memory_order_relaxed);
+    sched.bpm.store(120.0f, std::memory_order_relaxed);
+    sched.time_sig_numerator.store(4, std::memory_order_relaxed);
+    sched.time_sig_denominator.store(4, std::memory_order_relaxed);
+    if (sched.quantize_launch_beats.load(std::memory_order_relaxed) == 0)
+        sched.quantize_launch_beats.store(4, std::memory_order_relaxed);
+    const int bpb = juce::jmax(1, sched.time_sig_numerator.load(std::memory_order_relaxed));
+    const float hb = sched.hop_bars.load(std::memory_order_relaxed);
+    sched.hop_beats.store(hb * static_cast<float>(bpb), std::memory_order_relaxed);
+    const float db = sched.schedule_delay_bars.load(std::memory_order_relaxed);
+    sched.schedule_delay_beats.store(db * static_cast<float>(bpb), std::memory_order_relaxed);
+    m_controls.sync_time_mode_from_scheduler(
+        sched,
+        m_processor.loop_last_generation.load(std::memory_order_relaxed));
+    m_controls.sync_click_track_from_processor(m_processor);
+    streamgen_log(
+        "default_120bpm_grid: musical=on bpm=120 sig=4/4 quant_launch="
+        + juce::String(sched.quantize_launch_beats.load(std::memory_order_relaxed)));
+}
+
 void StreamGenComponent::try_load_default_audio_from_repo(const juce::File& manifest_file)
 {
     juce::File manifest(manifest_file.getFullPathName());
-    juce::File repo_root = manifest.getParentDirectory().getParentDirectory().getParentDirectory();
+    juce::File repo_root = find_repo_root_with_streamgen_tests(manifest);
+    if (!repo_root.exists())
+    {
+        repo_root = manifest.getParentDirectory().getParentDirectory().getParentDirectory();
+        streamgen_log(
+            "try_load_default_audio: walk-up miss; fallback repo_root=" + repo_root.getFullPathName());
+    }
+    else
+    {
+        streamgen_log("try_load_default_audio: repo_root=" + repo_root.getFullPathName());
+    }
 
-    juce::File warm_file = repo_root.getChildFile("tests/streamgen_test_audio/drums_120bpm.wav");
-    juce::File sim_file = repo_root.getChildFile("tests/streamgen_test_audio/synth_120bpm_medium.wav");
+    juce::File warm_file = repo_root.getChildFile(k_default_warm_rel);
+    juce::File sim_file = repo_root.getChildFile(k_default_sim_rel);
+
+    bool loaded_any = false;
 
     if (warm_file.existsAsFile())
     {
@@ -498,19 +604,24 @@ void StreamGenComponent::try_load_default_audio_from_repo(const juce::File& mani
         {
             m_controls.set_warm_route_enabled(true);
             m_controls.set_warm_route_toggle(false, juce::dontSendNotification);
+            loaded_any = true;
             DBG("StreamGenComponent: default warm-start loaded: " + warm_file.getFileName());
+            streamgen_log("default warm: " + warm_file.getFullPathName());
         }
     }
     else
     {
         DBG("StreamGenComponent: default warm-start not found at " + warm_file.getFullPathName());
+        streamgen_log("default warm missing: " + warm_file.getFullPathName());
     }
 
     if (sim_file.existsAsFile())
     {
         if (m_processor.load_simulation_file(sim_file))
         {
+            loaded_any = true;
             DBG("StreamGenComponent: default simulation sax loaded: " + sim_file.getFileName());
+            streamgen_log("default sim: " + sim_file.getFullPathName());
             if (m_simulation_window != nullptr)
                 m_simulation_window->sync_from_processor();
         }
@@ -518,7 +629,11 @@ void StreamGenComponent::try_load_default_audio_from_repo(const juce::File& mani
     else
     {
         DBG("StreamGenComponent: default simulation file not found at " + sim_file.getFullPathName());
+        streamgen_log("default sim missing: " + sim_file.getFullPathName());
     }
+
+    if (loaded_any)
+        apply_default_120bpm_grid_preset();
 }
 
 } // namespace streamgen

@@ -162,6 +162,17 @@ void InferenceWorker::process_job(const GenerationJob& job)
         && std::equal(m_attention_mask.begin(), m_attention_mask.end(), m_t5_cache_mask.begin());
     const std::vector<float>* precomputed_t5 = reuse_t5 ? &m_cached_t5_masked : nullptr;
 
+    if (reuse_t5)
+    {
+        DBG("InferenceWorker: job #" + juce::String(job.job_id) + " T5 cache hit (reusing masked embeddings)");
+        streamgen_log("InferenceWorker::process_job id=" + juce::String(job.job_id) + " t5_cache=hit");
+    }
+    else
+    {
+        DBG("InferenceWorker: job #" + juce::String(job.job_id) + " T5 cache miss (will run ONNX T5)");
+        streamgen_log("InferenceWorker::process_job id=" + juce::String(job.job_id) + " t5_cache=miss");
+    }
+
     // Snapshot sax audio (streamgen_audio) from input ring buffer
     auto sax_audio = m_processor.snapshot_input(
         job.window_start_sample, job.window_length_samples());

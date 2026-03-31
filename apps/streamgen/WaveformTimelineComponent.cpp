@@ -258,6 +258,49 @@ void WaveformTimelineComponent::set_time_axis_for_paint(
     m_paint_time_sig_d = juce::jmax(1, time_sig_denominator);
 }
 
+juce::String WaveformTimelineComponent::tooltip_for_timeline_x(int x) const
+{
+    const int w = getWidth();
+    if (w <= 0 || m_sample_rate <= 0)
+        return {};
+
+    const double now_sec = static_cast<double>(m_absolute_pos) / static_cast<double>(m_sample_rate);
+    const double vis = static_cast<double>(m_visible_seconds);
+    const double past = static_cast<double>(k_timeline_playhead_past_fraction);
+    const double start_sec = now_sec - past * vis;
+    const double frac = static_cast<double>(x) / static_cast<double>(w);
+    const double t_sec = start_sec + frac * vis;
+    const int64_t smp = static_cast<int64_t>(std::llround(t_sec * static_cast<double>(m_sample_rate)));
+
+    juce::String tip = juce::String(format_time(smp, m_sample_rate));
+    if (m_paint_musical)
+    {
+        const double bpm_d = static_cast<double>(juce::jlimit(20.0f, 400.0f, m_paint_bpm));
+        tip += "  ";
+        tip += juce::String(format_bar_beat(smp, m_sample_rate, bpm_d, m_paint_beats_per_bar));
+    }
+    return tip;
+}
+
+void WaveformTimelineComponent::mouseMove(const juce::MouseEvent& event)
+{
+    const int h = getHeight();
+    const int timeline_height = 16;
+    const int timeline_y = h - timeline_height;
+    if (event.y >= timeline_y)
+        setTooltip(tooltip_for_timeline_x(event.x));
+    else
+        setTooltip({});
+
+    Component::mouseMove(event);
+}
+
+void WaveformTimelineComponent::mouseExit(const juce::MouseEvent& event)
+{
+    setTooltip({});
+    Component::mouseExit(event);
+}
+
 void WaveformTimelineComponent::paint(juce::Graphics& g)
 {
     auto bounds = getLocalBounds();

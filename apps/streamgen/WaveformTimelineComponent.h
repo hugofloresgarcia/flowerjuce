@@ -16,7 +16,8 @@ enum class TimelineWaveRole {
 
 /// Scrolling waveform display synced to absolute time, with generation window
 /// overlay markers showing scheduled jobs and completed regions.
-class WaveformTimelineComponent : public juce::Component {
+class WaveformTimelineComponent : public juce::Component,
+                                  public juce::SettableTooltipClient {
 public:
     WaveformTimelineComponent();
 
@@ -57,8 +58,11 @@ public:
     void set_time_axis_for_paint(bool musical, float bpm, int beats_per_bar, int time_sig_denominator);
 
     void paint(juce::Graphics& g) override;
+    void mouseMove(const juce::MouseEvent& event) override;
+    void mouseExit(const juce::MouseEvent& event) override;
 
 private:
+    juce::String tooltip_for_timeline_x(int x) const;
     std::vector<float> m_min_px;
     std::vector<float> m_max_px;
     int64_t m_absolute_pos = 0;

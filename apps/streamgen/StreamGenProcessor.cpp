@@ -1,6 +1,7 @@
 #include "StreamGenProcessor.h"
 #include "StreamGenDebugLog.h"
 #include "GenerationTimelineStore.h"
+#include "MusicalTime.h"
 
 #include <juce_audio_formats/juce_audio_formats.h>
 #include <algorithm>
@@ -69,8 +70,11 @@ void StreamGenProcessor::reset_timeline_and_transport()
     }
 
     {
-        std::lock_guard<std::mutex> lock(m_warm_mutex);
-        m_warm_playback_pos = 0;
+        std::lock_guard<std::mutex> lock(m_last_gen_mutex);
+        m_last_gen_row_major.clear();
+        m_last_gen_num_samples = 0;
+        m_last_gen_output_start_sample = 0;
+        m_last_gen_snapshot_valid.store(false, std::memory_order_relaxed);
     }
 
     streamgen_log("reset_timeline_and_transport done");
@@ -97,6 +101,7 @@ void StreamGenProcessor::audioDeviceAboutToStart(juce::AudioIODevice* device)
     m_current_sample_rate = static_cast<int>(device->getCurrentSampleRate());
     m_scheduler.set_playback_sample_rate(m_current_sample_rate);
     rebuild_ring_buffers(m_current_sample_rate);
+    rebuild_click_impulses();
     DBG("StreamGenProcessor: audio device starting, sample_rate=" + juce::String(m_current_sample_rate));
     juce::String io_name = device != nullptr ? device->getName() : juce::String("<null>");
     streamgen_log("audioDeviceAboutToStart: device=" + io_name
@@ -157,6 +162,7 @@ void StreamGenProcessor::audioDeviceIOCallbackWithContext(
             {
                 std::memset(output_data[0], 0, static_cast<size_t>(num_samples) * sizeof(float));
                 std::memset(output_data[1], 0, static_cast<size_t>(num_samples) * sizeof(float));
+                mix_click_track_into(output_data[0], output_data[1], num_samples, pos_block_start);
             }
             m_audio_telemetry.record_block(0.0, 0.0, 0.0, num_samples);
             m_scheduler.advance(num_samples);
@@ -278,25 +284,22 @@ void StreamGenProcessor::audioDeviceIOCallbackWithContext(
                 float right = 0.0f;
                 bool consumed_warm_frame = false;
 
-                if (m_warm_length_frames > 0 && m_warm_playback_pos < m_warm_length_frames)
+                if (m_warm_length_frames > 0)
                 {
-                    size_t idx = static_cast<size_t>(m_warm_playback_pos) * NUM_CHANNELS;
+                    int64_t frame_idx = block_start + static_cast<int64_t>(i);
+                    int64_t mod = frame_idx % m_warm_length_frames;
+                    if (mod < 0)
+                        mod += m_warm_length_frames;
+                    size_t idx = static_cast<size_t>(mod) * NUM_CHANNELS;
                     left = m_warm_audio[idx];
                     right = m_warm_audio[idx + 1];
                     consumed_warm_frame = true;
-                    m_warm_playback_pos++;
-
-                    if (m_warm_playback_pos >= m_warm_length_frames
-                        && warm_start_looping.load(std::memory_order_relaxed))
-                    {
-                        m_warm_playback_pos = 0;
-                    }
                 }
 
                 int64_t gen_abs = block_start + static_cast<int64_t>(i);
-                int64_t ring_idx_gen = absolute_to_ring_index(gen_abs);
-                float gen_left = m_output_ring[static_cast<size_t>(ring_idx_gen * NUM_CHANNELS)];
-                float gen_right = m_output_ring[static_cast<size_t>(ring_idx_gen * NUM_CHANNELS + 1)];
+                float gen_left = 0.0f;
+                float gen_right = 0.0f;
+                output_ring_sample_at(gen_abs, gen_left, gen_right);
 
                 const bool has_generated = (std::fabs(gen_left) > k_drums_gen_amplitude_epsilon
                                             || std::fabs(gen_right) > k_drums_gen_amplitude_epsilon);
@@ -324,7 +327,14 @@ void StreamGenProcessor::audioDeviceIOCallbackWithContext(
         {
             drums_path = use_warm ? "ring_only_warm_lock_fail" : "ring";
             const int64_t block_start = m_scheduler.absolute_sample_pos();
-            read_drums_from_ring(output_data[0], output_data[1], num_samples);
+            for (int i = 0; i < num_samples; ++i)
+            {
+                float L = 0.0f;
+                float R = 0.0f;
+                output_ring_sample_at(block_start + static_cast<int64_t>(i), L, R);
+                output_data[0][i] = L;
+                output_data[1][i] = R;
+            }
             for (int i = 0; i < num_samples; ++i)
             {
                 int64_t mon_idx = absolute_to_ring_index(block_start + static_cast<int64_t>(i));
@@ -356,6 +366,8 @@ void StreamGenProcessor::audioDeviceIOCallbackWithContext(
                 output_data[1][i] += sax_sample * sax_g;
             }
         }
+
+        mix_click_track_into(output_data[0], output_data[1], num_samples, pos_block_start);
     }
     else if (num_output_channels >= 1 && output_data != nullptr)
     {
@@ -399,6 +411,77 @@ void StreamGenProcessor::audioDeviceIOCallbackWithContext(
     }
 }
 
+void StreamGenProcessor::rebuild_click_impulses()
+{
+    const int sr = juce::jmax(1, m_current_sample_rate);
+    const int len = juce::jlimit(32, 320, sr / 80);
+    m_click_impulse_beat.assign(static_cast<size_t>(len), 0.0f);
+    const double two_pi = 6.28318530717958647692;
+    const double freq_hz = 2000.0;
+    double abs_peak = 0.0;
+    for (int i = 0; i < len; ++i)
+    {
+        const double t = static_cast<double>(i) / static_cast<double>(sr);
+        const double env = std::exp(-t * 140.0);
+        const float s = static_cast<float>(std::sin(two_pi * freq_hz * t) * env);
+        m_click_impulse_beat[static_cast<size_t>(i)] = s;
+        abs_peak = std::max(abs_peak, std::abs(static_cast<double>(s)));
+    }
+    const float inv_peak = abs_peak > 1.0e-8 ? static_cast<float>(1.0 / abs_peak) : 1.0f;
+    for (float& v : m_click_impulse_beat)
+        v *= inv_peak;
+    m_click_impulse_downbeat = m_click_impulse_beat;
+    for (float& v : m_click_impulse_downbeat)
+        v *= 1.5f;
+}
+
+void StreamGenProcessor::mix_click_track_into(float* left, float* right, int num_samples,
+                                             int64_t block_start_sample)
+{
+    if (left == nullptr || right == nullptr || num_samples <= 0)
+        return;
+    if (!click_track_enabled.load(std::memory_order_relaxed))
+        return;
+    if (!m_scheduler.musical_time_enabled.load(std::memory_order_relaxed))
+        return;
+    const float vol = click_track_volume.load(std::memory_order_relaxed);
+    if (vol <= 1.0e-8f)
+        return;
+    const int sr = m_current_sample_rate;
+    if (sr <= 0)
+        return;
+    float bpm = m_scheduler.bpm.load(std::memory_order_relaxed);
+    bpm = juce::jlimit(20.0f, 400.0f, bpm);
+    const int bpb = juce::jmax(1, m_scheduler.time_sig_numerator.load(std::memory_order_relaxed));
+    const int64_t spb = beats_to_samples(1.0, sr, static_cast<double>(bpm));
+    if (spb <= 0)
+        return;
+    const int ir_len = static_cast<int>(m_click_impulse_beat.size());
+    if (ir_len <= 0)
+        return;
+
+    int64_t t = (block_start_sample + spb - 1) / spb;
+    t *= spb;
+    const int64_t block_end = block_start_sample + static_cast<int64_t>(num_samples);
+    while (t < block_end)
+    {
+        const int offset = static_cast<int>(t - block_start_sample);
+        const int64_t beat_idx = t / spb;
+        const bool downbeat = (beat_idx % static_cast<int64_t>(bpb)) == 0;
+        const std::vector<float>& ir = downbeat ? m_click_impulse_downbeat : m_click_impulse_beat;
+        for (int k = 0; k < ir_len; ++k)
+        {
+            const int dst = offset + k;
+            if (dst >= num_samples)
+                break;
+            const float s = vol * ir[static_cast<size_t>(k)];
+            left[dst] += s;
+            right[dst] += s;
+        }
+        t += spb;
+    }
+}
+
 void StreamGenProcessor::feed_audio(const float* mono_input, int num_samples)
 {
     streamgen_log("feed_audio n=" + juce::String(num_samples) + " pos0="
@@ -435,11 +518,55 @@ void StreamGenProcessor::read_drums_from_ring(float* left, float* right, int num
     for (int i = 0; i < num_samples; ++i)
     {
         int64_t abs_pos = block_start + i;
-        int64_t ring_idx = absolute_to_ring_index(abs_pos);
-        size_t base = static_cast<size_t>(ring_idx * NUM_CHANNELS);
-        left[i] = m_output_ring[base];
-        right[i] = m_output_ring[base + 1];
+        output_ring_sample_at(abs_pos, left[i], right[i]);
     }
+}
+
+void StreamGenProcessor::output_ring_sample_at(int64_t absolute_sample, float& out_left, float& out_right) const
+{
+    int64_t ring_idx = absolute_to_ring_index(absolute_sample);
+    size_t base = static_cast<size_t>(ring_idx * NUM_CHANNELS);
+    float L = m_output_ring[base];
+    float R = m_output_ring[base + 1];
+    const bool silent = (std::fabs(L) <= k_drums_gen_amplitude_epsilon
+                         && std::fabs(R) <= k_drums_gen_amplitude_epsilon);
+    if (!silent || !loop_last_generation.load(std::memory_order_relaxed))
+    {
+        out_left = L;
+        out_right = R;
+        return;
+    }
+
+    std::lock_guard<std::mutex> lock(m_last_gen_mutex);
+    if (!m_last_gen_snapshot_valid.load(std::memory_order_relaxed) || m_last_gen_num_samples <= 0)
+    {
+        out_left = L;
+        out_right = R;
+        return;
+    }
+
+    const int64_t len = m_last_gen_num_samples;
+    int64_t off = absolute_sample - m_last_gen_output_start_sample;
+    int64_t mod = off % len;
+    if (mod < 0)
+        mod += len;
+    out_left = m_last_gen_row_major[static_cast<size_t>(mod)];
+    out_right = m_last_gen_row_major[static_cast<size_t>(static_cast<size_t>(len) + static_cast<size_t>(mod))];
+}
+
+void StreamGenProcessor::commit_last_generation_snapshot(
+    const std::vector<float>& gen_row_major_stereo,
+    int64_t output_start_sample,
+    int64_t num_samples)
+{
+    assert(static_cast<int64_t>(gen_row_major_stereo.size()) >= num_samples * NUM_CHANNELS);
+    std::lock_guard<std::mutex> lock(m_last_gen_mutex);
+    m_last_gen_row_major.assign(
+        gen_row_major_stereo.begin(),
+        gen_row_major_stereo.begin() + static_cast<size_t>(num_samples * NUM_CHANNELS));
+    m_last_gen_output_start_sample = output_start_sample;
+    m_last_gen_num_samples = num_samples;
+    m_last_gen_snapshot_valid.store(num_samples > 0, std::memory_order_relaxed);
 }
 
 int64_t StreamGenProcessor::absolute_to_ring_index(int64_t absolute_sample) const
@@ -514,6 +641,42 @@ void StreamGenProcessor::write_output(
             m_output_ring[base + 1] = new_right;
         }
     }
+
+    commit_last_generation_snapshot(audio, start_sample, num_samples);
+}
+
+void StreamGenProcessor::set_simulation_playback_sample(int64_t sample)
+{
+    std::lock_guard<std::mutex> lock(m_sim_mutex);
+    const int64_t total = static_cast<int64_t>(m_sim_audio.size());
+    int64_t clamped = sample;
+    if (total > 0 && clamped >= total)
+        clamped = total - 1;
+    if (clamped < 0)
+        clamped = 0;
+    m_sim_playback_pos = static_cast<double>(clamped);
+    simulation_position.store(clamped, std::memory_order_relaxed);
+}
+
+void StreamGenProcessor::snap_simulation_position_to_bar_grid()
+{
+    const int sr = m_current_sample_rate > 0 ? m_current_sample_rate : m_constants.sample_rate;
+    if (sr <= 0)
+        return;
+    const float bpm = m_scheduler.bpm.load(std::memory_order_relaxed);
+    const int bpb = juce::jmax(1, m_scheduler.time_sig_numerator.load(std::memory_order_relaxed));
+    if (!m_scheduler.musical_time_enabled.load(std::memory_order_relaxed))
+        return;
+    const double bpm_d = static_cast<double>(juce::jlimit(20.0f, 400.0f, bpm));
+    const int64_t bar_samples = beats_to_samples(static_cast<double>(bpb), sr, bpm_d);
+    if (bar_samples <= 0)
+        return;
+
+    std::lock_guard<std::mutex> lock(m_sim_mutex);
+    int64_t pos = static_cast<int64_t>(m_sim_playback_pos);
+    const int64_t snapped = (pos / bar_samples) * bar_samples;
+    m_sim_playback_pos = static_cast<double>(snapped);
+    simulation_position.store(snapped, std::memory_order_relaxed);
 }
 
 // --- UI waveform readout (bucketed min/max; subsampled ring reads per bucket) ---
@@ -816,16 +979,14 @@ bool StreamGenProcessor::load_warm_start(const juce::File& file, bool start_play
     juce::AudioBuffer<float> buffer(static_cast<int>(reader->numChannels), static_cast<int>(num_frames));
     reader->read(&buffer, 0, static_cast<int>(num_frames), 0, true, true);
 
-    int64_t target_frames = m_constants.sample_size;
-    int64_t pad_frames = (num_frames < target_frames) ? (target_frames - num_frames) : 0;
-    int64_t total_frames = pad_frames + num_frames;
-
-    // Build stereo interleaved buffer [L, R, L, R, ...]
-    std::vector<float> stereo(static_cast<size_t>(total_frames) * NUM_CHANNELS, 0.0f);
+    // One loop length = file length only. Padding to the model window (sample_size) inserted huge
+    // trailing silence for short clips and broke alignment with the metronome (absolute_sample_pos
+    // % loop vs beat grid).
+    std::vector<float> stereo(static_cast<size_t>(num_frames) * NUM_CHANNELS, 0.0f);
 
     for (int64_t i = 0; i < num_frames; ++i)
     {
-        size_t dst = static_cast<size_t>(pad_frames + i) * NUM_CHANNELS;
+        size_t dst = static_cast<size_t>(i) * NUM_CHANNELS;
         float left = buffer.getReadPointer(0)[i];
         float right = (reader->numChannels >= 2) ? buffer.getReadPointer(1)[i] : left;
         stereo[dst] = left;
@@ -835,15 +996,13 @@ bool StreamGenProcessor::load_warm_start(const juce::File& file, bool start_play
     {
         std::lock_guard<std::mutex> lock(m_warm_mutex);
         m_warm_audio = std::move(stereo);
-        m_warm_length_frames = total_frames;
-        m_warm_playback_pos = 0;
+        m_warm_length_frames = num_frames;
     }
 
     warm_start_playing.store(start_playback, std::memory_order_relaxed);
 
     DBG("StreamGenProcessor: loaded warm-start file: " + file.getFileName()
-        + " (" + juce::String(num_frames) + " frames, padded to "
-        + juce::String(total_frames) + ")"
+        + " (" + juce::String(num_frames) + " frames)"
         + (start_playback ? ", playing" : ", idle"));
     return true;
 }

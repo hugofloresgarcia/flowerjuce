@@ -77,10 +77,13 @@ void GenerationScheduler::advance(int num_samples)
     {
         if (musical)
         {
-            float hb = hop_beats.load(std::memory_order_relaxed);
-            if (hb < 0.25f)
-                hb = 0.25f;
-            hop_samples = beats_to_samples(static_cast<double>(hb), rate, static_cast<double>(bpm_val));
+            float hb_bar = hop_bars.load(std::memory_order_relaxed);
+            if (hb_bar < 0.25f)
+                hb_bar = 0.25f;
+            const int bpb = time_sig_numerator.load(std::memory_order_relaxed);
+            const int bpb_cl = juce::jmax(1, bpb);
+            const double hop_qn_beats = static_cast<double>(hb_bar) * static_cast<double>(bpb_cl);
+            hop_samples = beats_to_samples(hop_qn_beats, rate, static_cast<double>(bpm_val));
         }
         else
         {
@@ -186,10 +189,13 @@ void GenerationScheduler::enqueue_job(int64_t keep_end_sample)
     int64_t output_delay_smpl = 0;
     if (musical)
     {
-        float delay_beats = schedule_delay_beats.load(std::memory_order_relaxed);
-        if (delay_beats < 0.0f)
-            delay_beats = 0.0f;
-        output_delay_smpl = beats_to_samples(static_cast<double>(delay_beats), rate, static_cast<double>(bpm_val));
+        float d_bar = schedule_delay_bars.load(std::memory_order_relaxed);
+        if (d_bar < 0.0f)
+            d_bar = 0.0f;
+        const int bpb = time_sig_numerator.load(std::memory_order_relaxed);
+        const int bpb_cl = juce::jmax(1, bpb);
+        const double delay_qn_beats = static_cast<double>(d_bar) * static_cast<double>(bpb_cl);
+        output_delay_smpl = beats_to_samples(delay_qn_beats, rate, static_cast<double>(bpm_val));
     }
     else
     {

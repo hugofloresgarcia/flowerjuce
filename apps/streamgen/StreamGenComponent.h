@@ -59,6 +59,9 @@ private:
     void load_warm_start();
     void try_load_default_audio_from_repo(const juce::File& manifest_file);
 
+    /// Set scheduler + UI to 120 BPM / 4/4 musical grid when default repo test assets are loaded.
+    void apply_default_120bpm_grid_preset();
+
     /// Re-register the processor with the device manager after pipeline load and recover if I/O is down.
     void reattach_audio_callback_after_pipeline_load();
 

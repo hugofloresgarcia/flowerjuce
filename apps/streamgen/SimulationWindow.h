@@ -37,6 +37,7 @@ private:
     juce::TextButton m_pause_button{"Pause"};
     juce::TextButton m_stop_button{"Stop"};
     juce::ToggleButton m_loop_toggle{"Loop"};
+    juce::ToggleButton m_snap_bar_toggle{"Snap play to bar (musical)"};
 
     juce::Label m_speed_label;
     juce::Slider m_speed_slider;
@@ -59,7 +60,7 @@ public:
     {
         setContentOwned(new SimulationPanel(processor), true);
         setResizable(true, false);
-        centreWithSize(420, 260);
+        centreWithSize(420, 300);
         setUsingNativeTitleBar(true);
     }
 
