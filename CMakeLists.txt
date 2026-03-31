@@ -1,4 +1,10 @@
-cmake_minimum_required(VERSION 3.22)
+cmake_minimum_required(VERSION 3.25)
+
+# Old FetchContent deps (e.g. cnpy) ship CMakeLists with cmake_minimum_required(2.8); allow them
+# under newer CMake toolchains.
+if(CMAKE_VERSION VERSION_GREATER_EQUAL 3.31)
+    set(CMAKE_POLICY_VERSION_MINIMUM 3.5)
+endif()
 
 # Version is defined here as the single source of truth
 # This version is used by:

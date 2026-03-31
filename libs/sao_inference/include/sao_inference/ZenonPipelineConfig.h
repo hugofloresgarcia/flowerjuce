@@ -54,6 +54,11 @@ struct ZenonPipelineConfig {
     std::string vae_decoder_onnx_path;
     std::string number_embedder_weights_dir;
 
+    /// When true, VAE uses MLX Metal (see manifest `mlx/` paths) instead of ONNX CPU.
+    bool use_mlx_vae = false;
+    std::string mlx_vae_weights_path;
+    std::string mlx_vae_config_path;
+
     bool use_cuda = false;
     bool use_coreml = false;
 

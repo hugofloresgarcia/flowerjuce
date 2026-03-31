@@ -32,6 +32,40 @@ public:
                               bool shouldDrawButtonAsHighlighted,
                               bool shouldDrawButtonAsDown) override;
 
+    void drawComboBox(juce::Graphics&,
+                      int width,
+                      int height,
+                      bool isButtonDown,
+                      int buttonX,
+                      int buttonY,
+                      int buttonW,
+                      int buttonH,
+                      juce::ComboBox&) override;
+
+    void positionComboBoxText(juce::ComboBox&, juce::Label&) override;
+
+    void drawLinearSlider(juce::Graphics&,
+                          int x,
+                          int y,
+                          int width,
+                          int height,
+                          float sliderPos,
+                          float minSliderPos,
+                          float maxSliderPos,
+                          juce::Slider::SliderStyle,
+                          juce::Slider&) override;
+
+    void drawTickBox(juce::Graphics&,
+                     juce::Component&,
+                     float x,
+                     float y,
+                     float w,
+                     float h,
+                     bool ticked,
+                     bool isEnabled,
+                     bool shouldDrawButtonAsHighlighted,
+                     bool shouldDrawButtonAsDown) override;
+
     static void setControlButtonType(juce::Button& button, ControlButtonType type);
     static ControlButtonType getControlButtonType(const juce::Button& button);
 

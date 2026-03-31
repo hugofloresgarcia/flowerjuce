@@ -1,4 +1,6 @@
 #include "StreamGenComponent.h"
+#include "MusicalTime.h"
+#include "StreamGenDebugLog.h"
 
 namespace streamgen {
 
@@ -8,10 +10,10 @@ StreamGenComponent::StreamGenComponent(
     : m_processor(processor),
       m_device_manager(device_manager)
 {
-    m_title_label.setText("StreamGen Live", juce::dontSendNotification);
-    m_title_label.setColour(juce::Label::textColourId, juce::Colour(0xffe0e0e0));
-    m_title_label.setFont(juce::Font(18.0f, juce::Font::bold));
+    m_title_label.setText("streamgen live", juce::dontSendNotification);
     m_title_label.setJustificationType(juce::Justification::centred);
+    juce::FontOptions title_options(juce::Font::getDefaultMonospacedFontName(), 17.0f, juce::Font::bold);
+    m_title_label.setFont(juce::Font(title_options));
     addAndMakeVisible(m_title_label);
 
     m_sax_waveform.set_label("SAX INPUT");
@@ -50,14 +52,59 @@ StreamGenComponent::StreamGenComponent(
         m_processor.scheduler().cfg_scale.store(val, std::memory_order_relaxed);
     };
 
+    m_controls.on_schedule_delay_changed = [this](float val)
+    {
+        m_processor.scheduler().schedule_delay_seconds.store(val, std::memory_order_relaxed);
+    };
+
+    m_controls.on_hop_beats_changed = [this](float val)
+    {
+        m_processor.scheduler().hop_beats.store(val, std::memory_order_relaxed);
+    };
+
+    m_controls.on_schedule_delay_beats_changed = [this](float val)
+    {
+        m_processor.scheduler().schedule_delay_beats.store(val, std::memory_order_relaxed);
+    };
+
+    m_controls.on_musical_time_changed = [this](bool musical)
+    {
+        m_processor.scheduler().musical_time_enabled.store(musical, std::memory_order_relaxed);
+        m_controls.sync_hop_delay_sliders_from_scheduler(m_processor.scheduler());
+    };
+
+    m_controls.on_bpm_changed = [this](float val)
+    {
+        m_processor.scheduler().bpm.store(val, std::memory_order_relaxed);
+    };
+
+    m_controls.on_time_signature_changed = [this](int n, int d)
+    {
+        m_processor.scheduler().time_sig_numerator.store(n, std::memory_order_relaxed);
+        m_processor.scheduler().time_sig_denominator.store(d, std::memory_order_relaxed);
+    };
+
+    m_controls.on_quantize_launch_changed = [this](int beats)
+    {
+        m_processor.scheduler().quantize_launch_beats.store(beats, std::memory_order_relaxed);
+    };
+
     m_controls.on_warm_start_clicked = [this]() { load_warm_start(); };
+    m_controls.on_warm_route_toggled = [this](bool route_to_output)
+    {
+        m_processor.set_warm_start_playing(route_to_output);
+    };
     m_controls.on_simulate_clicked = [this]() { show_simulation_window(); };
     m_controls.on_audio_settings_clicked = [this]() { show_audio_settings(); };
+    m_controls.on_operator_clicked = [this]() { show_operator_dashboard(); };
+
+    m_controls.on_reset_clicked = [this]() { reset_session(); };
 
     m_controls.on_generation_enabled_changed = [this](bool enabled)
     {
         m_processor.scheduler().generation_enabled.store(enabled, std::memory_order_relaxed);
         DBG("StreamGenComponent: generation " + juce::String(enabled ? "enabled" : "disabled"));
+        streamgen_log("UI: generation_enabled=" + juce::String(enabled ? "true" : "false"));
     };
 
     m_mixer.on_sax_gain_changed = [this](float val)
@@ -70,8 +117,12 @@ StreamGenComponent::StreamGenComponent(
         m_processor.drums_gain.store(val, std::memory_order_relaxed);
     };
 
-    setSize(1000, 600);
-    startTimerHz(30);
+    m_controls.set_warm_route_enabled(false);
+
+    m_controls.sync_time_mode_from_scheduler(m_processor.scheduler());
+
+    setSize(1000, 720);
+    startTimerHz(20);
 }
 
 StreamGenComponent::~StreamGenComponent()
@@ -81,19 +132,85 @@ StreamGenComponent::~StreamGenComponent()
         m_worker->stopThread(5000);
 }
 
-void StreamGenComponent::load_pipeline(const std::string& manifest_path, bool use_cuda, bool use_coreml)
+void StreamGenComponent::load_pipeline(
+    const std::string& manifest_path,
+    bool use_cuda,
+    bool use_coreml,
+    bool use_mlx_vae)
 {
+    streamgen_log("load_pipeline: removeAudioCallback (safe window for processor.configure / ring rebuild)");
+    m_device_manager.removeAudioCallback(&m_processor);
+
     m_worker = std::make_unique<InferenceWorker>(m_processor);
 
-    if (!m_worker->load_pipeline(manifest_path, use_cuda, use_coreml))
+    if (!m_worker->load_pipeline(manifest_path, use_cuda, use_coreml, use_mlx_vae))
     {
         DBG("StreamGenComponent: FAILED to load pipeline from " + juce::String(manifest_path));
+        streamgen_log("load_pipeline: FAILED, re-attaching audio callback");
         m_worker.reset();
+        reattach_audio_callback_after_pipeline_load();
         return;
     }
 
+    reattach_audio_callback_after_pipeline_load();
+
     m_worker->startThread(juce::Thread::Priority::high);
     DBG("StreamGenComponent: inference worker started");
+    streamgen_log("load_pipeline: worker thread started");
+
+    try_load_default_audio_from_repo(juce::File(manifest_path));
+}
+
+void StreamGenComponent::reset_session()
+{
+    streamgen_log("UI: reset_session (stop audio + worker, clear timeline/transport)");
+    m_device_manager.removeAudioCallback(&m_processor);
+    if (m_worker != nullptr)
+        m_worker->stopThread(8000);
+    m_processor.reset_timeline_and_transport();
+    if (m_worker != nullptr)
+        m_worker->startThread(juce::Thread::Priority::high);
+    reattach_audio_callback_after_pipeline_load();
+    if (m_simulation_window != nullptr)
+        m_simulation_window->sync_from_processor();
+}
+
+void StreamGenComponent::reattach_audio_callback_after_pipeline_load()
+{
+    m_device_manager.addAudioCallback(&m_processor);
+
+    juce::AudioIODevice* dev = m_device_manager.getCurrentAudioDevice();
+    const bool playing = dev != nullptr && dev->isPlaying();
+
+    streamgen_log(
+        "reattach_audio: dev="
+        + (dev != nullptr ? dev->getName() : juce::String("<null>"))
+        + " playing=" + juce::String(playing ? "y" : "n")
+        + " sr=" + juce::String(m_processor.current_sample_rate())
+        + " abs_pos=" + juce::String(m_processor.scheduler().absolute_sample_pos()));
+
+    if (dev == nullptr)
+    {
+        streamgen_log("reattach_audio: no device; restartLastAudioDevice()");
+        m_device_manager.restartLastAudioDevice();
+        dev = m_device_manager.getCurrentAudioDevice();
+        const bool playing_after = dev != nullptr && dev->isPlaying();
+        streamgen_log("reattach_audio: after restart dev="
+            + (dev != nullptr ? dev->getName() : juce::String("<null>"))
+            + " playing=" + juce::String(playing_after ? "y" : "n"));
+        return;
+    }
+
+    if (!playing)
+    {
+        streamgen_log("reattach_audio: device not playing; closeAudioDevice + restartLastAudioDevice");
+        m_device_manager.closeAudioDevice();
+        m_device_manager.restartLastAudioDevice();
+        dev = m_device_manager.getCurrentAudioDevice();
+        streamgen_log("reattach_audio: after cycle dev="
+            + (dev != nullptr ? dev->getName() : juce::String("<null>"))
+            + " playing=" + juce::String(dev != nullptr && dev->isPlaying() ? "y" : "n"));
+    }
 }
 
 void StreamGenComponent::resized()
@@ -102,7 +219,8 @@ void StreamGenComponent::resized()
 
     const int title_height = 30;
     const int sidebar_width = 160;
-    const int controls_height = 130;
+    // Controls: prompt + musical row + hop/keep + steps/cfg + land delay + two button rows (~280px).
+    const int controls_height = 288;
     const int waveform_min_height = 100;
     const int mixer_width = 80;
 
@@ -128,30 +246,123 @@ void StreamGenComponent::resized()
 
 void StreamGenComponent::paint(juce::Graphics& g)
 {
-    g.fillAll(juce::Colour(0xff0d0d1a));
+    g.fillAll(getLookAndFeel().findColour(juce::ResizableWindow::backgroundColourId));
 }
 
 void StreamGenComponent::timerCallback()
 {
     int sr = m_processor.current_sample_rate();
     int64_t abs_pos = m_processor.scheduler().absolute_sample_pos();
-    int visible_samples = static_cast<int>(15.0f * sr);
 
-    // Update waveforms
-    auto sax_data = m_processor.get_recent_input_waveform(visible_samples);
-    m_sax_waveform.update(sax_data, abs_pos, sr);
+    static int ui_tick = 0;
+    ++ui_tick;
+    if (ui_tick <= 8 || ui_tick % 40 == 0)
+    {
+        auto* dev = m_device_manager.getCurrentAudioDevice();
+        streamgen_log("UI timer: abs_pos=" + juce::String(abs_pos) + " sr=" + juce::String(sr)
+            + " gen_en=" + juce::String(m_processor.scheduler().generation_enabled.load() ? 1 : 0)
+            + " queue=" + juce::String(m_processor.scheduler().status.queue_depth.load())
+            + " device=" + (dev != nullptr ? dev->getName() : juce::String("<none>"))
+            + " playing=" + juce::String(dev != nullptr && dev->isPlaying() ? "y" : "n"));
+    }
+    const float visible_seconds = 30.0f;
+    int visible_samples = static_cast<int>(visible_seconds * static_cast<float>(sr));
 
-    auto drums_data = m_processor.get_recent_output_waveform(visible_samples);
-    m_drums_waveform.update(drums_data, abs_pos, sr);
+    m_sax_waveform.set_visible_duration(visible_seconds);
+    m_drums_waveform.set_visible_duration(visible_seconds);
+
+    auto& sched = m_processor.scheduler();
+    const bool musical = sched.musical_time_enabled.load(std::memory_order_relaxed);
+    const float bpm = sched.bpm.load(std::memory_order_relaxed);
+    const int sig_n = sched.time_sig_numerator.load(std::memory_order_relaxed);
+    const int sig_d = sched.time_sig_denominator.load(std::memory_order_relaxed);
+    m_sax_waveform.set_time_axis_for_paint(musical, bpm, sig_n, sig_d);
+    m_drums_waveform.set_time_axis_for_paint(musical, bpm, sig_n, sig_d);
+
+    if (m_processor.timeline_store() != nullptr)
+        m_timeline_paint_cache = m_processor.timeline_store()->snapshot_intersecting(
+            abs_pos, sr, visible_seconds);
+    else
+        m_timeline_paint_cache.clear();
+
+    // Waveforms: fewer horizontal buckets than panel width (stretched in paint); ~30s window with
+    // playhead at k_timeline_playhead_past_fraction (see GenerationTimelineStore.h).
+    const int panel_w = juce::jmax(1, juce::jmin(m_sax_waveform.getWidth(), m_drums_waveform.getWidth()));
+    const int wave_w = juce::jmax(1, panel_w / 2);
+    m_sax_wave_min.resize(static_cast<size_t>(wave_w));
+    m_sax_wave_max.resize(static_cast<size_t>(wave_w));
+    m_drums_wave_min.resize(static_cast<size_t>(wave_w));
+    m_drums_wave_max.resize(static_cast<size_t>(wave_w));
+    const bool drums_source_layers = m_processor.warm_start_has_audio();
+    if (drums_source_layers)
+    {
+        m_drums_wave_warm_min.resize(static_cast<size_t>(wave_w));
+        m_drums_wave_warm_max.resize(static_cast<size_t>(wave_w));
+        m_drums_wave_gen_min.resize(static_cast<size_t>(wave_w));
+        m_drums_wave_gen_max.resize(static_cast<size_t>(wave_w));
+    }
+
+    m_processor.fill_recent_input_waveform_buckets(
+        visible_samples, wave_w, m_sax_wave_min.data(), m_sax_wave_max.data());
+    m_sax_waveform.update(
+        m_sax_wave_min.data(),
+        m_sax_wave_max.data(),
+        wave_w,
+        abs_pos,
+        sr,
+        &m_timeline_paint_cache,
+        TimelineWaveRole::SaxInput);
+
+    m_processor.fill_recent_output_waveform_buckets(
+        visible_samples, wave_w, m_drums_wave_min.data(), m_drums_wave_max.data());
+    if (drums_source_layers)
+    {
+        m_processor.fill_recent_drums_source_buckets(
+            visible_samples,
+            wave_w,
+            m_drums_wave_warm_min.data(),
+            m_drums_wave_warm_max.data(),
+            m_drums_wave_gen_min.data(),
+            m_drums_wave_gen_max.data());
+        m_drums_waveform.update(
+            m_drums_wave_min.data(),
+            m_drums_wave_max.data(),
+            wave_w,
+            abs_pos,
+            sr,
+            &m_timeline_paint_cache,
+            TimelineWaveRole::DrumsOutput,
+            m_drums_wave_warm_min.data(),
+            m_drums_wave_warm_max.data(),
+            m_drums_wave_gen_min.data(),
+            m_drums_wave_gen_max.data());
+    }
+    else
+    {
+        m_drums_waveform.update(
+            m_drums_wave_min.data(),
+            m_drums_wave_max.data(),
+            wave_w,
+            abs_pos,
+            sr,
+            &m_timeline_paint_cache,
+            TimelineWaveRole::DrumsOutput);
+    }
+
+    const juce::String drums_wave_legend = drums_source_layers
+        ? juce::String("  orange=warm  blue=model")
+        : juce::String();
 
     // Source tags
-    if (m_processor.simulation_active.load(std::memory_order_relaxed))
+    if (m_processor.simulation_playing.load(std::memory_order_relaxed))
         m_sax_waveform.set_source_tag("[SIM]");
     else
         m_sax_waveform.set_source_tag("[LIVE]");
 
     if (m_processor.warm_start_playing.load(std::memory_order_relaxed))
-        m_drums_waveform.set_source_tag("[WARM]");
+        m_drums_waveform.set_source_tag("[WARM]" + drums_wave_legend);
+    else if (m_processor.warm_start_has_audio())
+        m_drums_waveform.set_source_tag("[WARM ·]" + drums_wave_legend);
     else
     {
         int64_t gen_count = m_processor.scheduler().status.generation_count.load(std::memory_order_relaxed);
@@ -171,10 +382,30 @@ void StreamGenComponent::timerCallback()
     // Update status
     auto& status = m_processor.scheduler().status;
     juce::String source_label = "Not started";
-    if (m_processor.simulation_active.load(std::memory_order_relaxed))
+    if (m_processor.simulation_playing.load(std::memory_order_relaxed))
         source_label = "Simulation";
     else if (abs_pos > 0)
         source_label = "Live Mic";
+
+    juce::String land_timeline;
+    if (m_worker != nullptr && m_worker->is_loaded())
+    {
+        InferenceSnapshot snap = m_worker->last_snapshot();
+        if (snap.job.job_id >= 0)
+        {
+            land_timeline = juce::String(format_time(snap.job.output_start_sample(), sr))
+                + "  #" + juce::String(snap.job.job_id);
+            if (sched.musical_time_enabled.load(std::memory_order_relaxed))
+            {
+                const float bpm = sched.bpm.load(std::memory_order_relaxed);
+                const int bpb = sched.time_sig_numerator.load(std::memory_order_relaxed);
+                const double bpm_d = static_cast<double>(juce::jlimit(20.0f, 400.0f, bpm));
+                const int bpb_cl = juce::jmax(1, bpb);
+                land_timeline += "  ";
+                land_timeline += juce::String(format_bar_beat(snap.job.output_start_sample(), sr, bpm_d, bpb_cl));
+            }
+        }
+    }
 
     m_gen_status.update(
         status.queue_depth.load(std::memory_order_relaxed),
@@ -182,7 +413,8 @@ void StreamGenComponent::timerCallback()
         status.last_latency_ms.load(std::memory_order_relaxed),
         status.last_job_id.load(std::memory_order_relaxed),
         status.worker_busy.load(std::memory_order_relaxed),
-        source_label);
+        source_label,
+        land_timeline);
 }
 
 void StreamGenComponent::show_audio_settings()
@@ -194,7 +426,7 @@ void StreamGenComponent::show_audio_settings()
     juce::DialogWindow::LaunchOptions options;
     options.content.setOwned(selector);
     options.dialogTitle = "Audio Device Settings";
-    options.dialogBackgroundColour = juce::Colour(0xff1a1a2e);
+    options.dialogBackgroundColour = getLookAndFeel().findColour(juce::ComboBox::backgroundColourId);
     options.escapeKeyTriggersCloseButton = true;
     options.useNativeTitleBar = true;
     options.resizable = false;
@@ -206,8 +438,25 @@ void StreamGenComponent::show_simulation_window()
     if (m_simulation_window == nullptr)
         m_simulation_window = std::make_unique<SimulationWindow>(m_processor);
 
+    m_simulation_window->sync_from_processor();
     m_simulation_window->setVisible(true);
     m_simulation_window->toFront(true);
+}
+
+void StreamGenComponent::show_operator_dashboard()
+{
+    if (m_operator_window == nullptr)
+    {
+        m_operator_window = std::make_unique<OperatorDashboardWindow>(
+            m_processor,
+            [this]()
+            {
+                return m_worker.get();
+            });
+    }
+
+    m_operator_window->setVisible(true);
+    m_operator_window->toFront(true);
 }
 
 void StreamGenComponent::load_warm_start()
@@ -226,11 +475,50 @@ void StreamGenComponent::load_warm_start()
                 return;
             }
 
-            if (m_processor.load_warm_start(result))
+            if (m_processor.load_warm_start(result, false))
             {
+                m_controls.set_warm_route_enabled(true);
+                m_controls.set_warm_route_toggle(false, juce::dontSendNotification);
                 DBG("StreamGenComponent: warm-start loaded: " + result.getFileName());
             }
         });
+}
+
+void StreamGenComponent::try_load_default_audio_from_repo(const juce::File& manifest_file)
+{
+    juce::File manifest(manifest_file.getFullPathName());
+    juce::File repo_root = manifest.getParentDirectory().getParentDirectory().getParentDirectory();
+
+    juce::File warm_file = repo_root.getChildFile("tests/streamgen_test_audio/drums_120bpm.wav");
+    juce::File sim_file = repo_root.getChildFile("tests/streamgen_test_audio/synth_120bpm_medium.wav");
+
+    if (warm_file.existsAsFile())
+    {
+        if (m_processor.load_warm_start(warm_file, false))
+        {
+            m_controls.set_warm_route_enabled(true);
+            m_controls.set_warm_route_toggle(false, juce::dontSendNotification);
+            DBG("StreamGenComponent: default warm-start loaded: " + warm_file.getFileName());
+        }
+    }
+    else
+    {
+        DBG("StreamGenComponent: default warm-start not found at " + warm_file.getFullPathName());
+    }
+
+    if (sim_file.existsAsFile())
+    {
+        if (m_processor.load_simulation_file(sim_file))
+        {
+            DBG("StreamGenComponent: default simulation sax loaded: " + sim_file.getFileName());
+            if (m_simulation_window != nullptr)
+                m_simulation_window->sync_from_processor();
+        }
+    }
+    else
+    {
+        DBG("StreamGenComponent: default simulation file not found at " + sim_file.getFullPathName());
+    }
 }
 
 } // namespace streamgen

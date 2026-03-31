@@ -85,6 +85,23 @@ ZenonPipelineConfig ZenonPipelineConfig::load(const std::string& manifest_path)
     std::string num_embed_dir = j.value("number_embedder_weights_dir", "weights/number_embedder_zenon");
     config.number_embedder_weights_dir = (manifest_dir / num_embed_dir).string();
 
+    config.mlx_vae_weights_path = (manifest_dir / "mlx" / "oobleck_vae.safetensors").string();
+    config.mlx_vae_config_path = (manifest_dir / "mlx" / "vae_config.json").string();
+    if (j.contains("mlx_vae") && j["mlx_vae"].is_object())
+    {
+        const auto& mv = j["mlx_vae"];
+        if (mv.contains("weights"))
+        {
+            config.mlx_vae_weights_path =
+                (manifest_dir / mv.at("weights").get<std::string>()).string();
+        }
+        if (mv.contains("config"))
+        {
+            config.mlx_vae_config_path =
+                (manifest_dir / mv.at("config").get<std::string>()).string();
+        }
+    }
+
     std::cout << "[ZenonPipelineConfig] Loaded from " << manifest_path << std::endl;
     std::cout << "  sample_rate=" << config.sample_rate
               << " latent_dim=" << config.latent_dim

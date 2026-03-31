@@ -18,11 +18,22 @@ then, build the project.
 
 **macOS:**
 
+Out-of-tree build directory is always **`build/`** at the repo root of this subtree (`flowerjuce/build`). Prefer **Debug** for development (see repo `AGENTS.md`). From `flowerjuce/`:
+
+```bash
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Debug
+cmake --build build
+```
+
+Or the classic in-folder flow:
+
 ```bash
 mkdir build && cd build
-cmake ..
-cmake --build . --config Release
+cmake -DCMAKE_BUILD_TYPE=Debug ..
+cmake --build .
 ```
+
+MLX / SAO options: `cmake --preset debug-mlx` or add `-DSAO_ENABLE_MLX=ON` to the configure line. Use `release` / `release-mlx` presets when you need optimized builds.
 
 **windows:**
 

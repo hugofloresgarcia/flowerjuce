@@ -27,7 +27,10 @@ struct ModelConstants {
 ///
 /// Timeline layout for one job:
 ///   [window_start ... keep_end ... window_end]
-///   |--- kept prefix ---|--- generated suffix ---|
+///   |--- kept prefix ---|--- generated suffix (model) ---|
+///
+/// Decoded generation is written from output_start_sample() for playback; by default that is
+/// keep_end_sample. output_delay_samples shifts landing later (schedule delay).
 struct GenerationJob {
     int64_t job_id = -1;
 
@@ -36,13 +39,16 @@ struct GenerationJob {
 
     int64_t keep_end_sample = 0;
 
+    /// Samples to place after keep_end where generation lands (from schedule delay).
+    int64_t output_delay_samples = 0;
+
     float keep_ratio = 0.5f;
     int steps = 8;
     float cfg_scale = 7.0f;
     float seconds_total = 11.888616f;
 
-    /// The absolute sample position where the generated (non-kept) portion begins.
-    int64_t output_start_sample() const { return keep_end_sample; }
+    /// Absolute sample where decoded generation begins on the timeline.
+    int64_t output_start_sample() const { return keep_end_sample + output_delay_samples; }
 
     /// Number of new audio samples this job produces (the generated suffix).
     int64_t output_length_samples() const { return window_end_sample - keep_end_sample; }

@@ -48,6 +48,15 @@ LayerCakeLookAndFeel::LayerCakeLookAndFeel()
     setColour(juce::TextButton::buttonOnColourId, m_accentCyan);
 
     setColour(juce::ToggleButton::textColourId, m_terminal);
+    setColour(juce::ToggleButton::tickColourId, m_controlGreen);
+    setColour(juce::ToggleButton::tickDisabledColourId, m_border);
+
+    setColour(juce::TextEditor::backgroundColourId, m_panel);
+    setColour(juce::TextEditor::textColourId, m_terminal);
+    setColour(juce::TextEditor::outlineColourId, m_border);
+    setColour(juce::TextEditor::focusedOutlineColourId, m_accentCyan.withAlpha(0.85f));
+    setColour(juce::TextEditor::highlightColourId, m_accentCyan.withAlpha(0.35f));
+    setColour(juce::TextEditor::highlightedTextColourId, m_terminal);
 
     setColour(juce::Label::textColourId, m_terminal);
     setColour(juce::Label::backgroundColourId, juce::Colours::transparentBlack);
@@ -67,6 +76,7 @@ LayerCakeLookAndFeel::LayerCakeLookAndFeel()
     setColour(juce::ComboBox::backgroundColourId, m_panel);
     setColour(juce::ComboBox::textColourId, m_terminal);
     setColour(juce::ComboBox::outlineColourId, m_border);
+    setColour(juce::ComboBox::arrowColourId, m_terminal);
 
     setColour(juce::PopupMenu::backgroundColourId, m_panel);
     setColour(juce::PopupMenu::textColourId, m_terminal);
@@ -106,9 +116,17 @@ juce::Font LayerCakeLookAndFeel::getPopupMenuFont()
 
 juce::Typeface::Ptr LayerCakeLookAndFeel::getTypefaceForFont(const juce::Font& font)
 {
+    // Match Font::Native::getDefaultPlatformTypefaceForFont: do not pass the "<Regular>" style
+    // placeholder through to CoreText / HarfBuzz unchanged — that breaks shaping and can trigger
+    // repeated jasserts in String (ASCII) paths elsewhere (e.g. TextEditor while the UI timer repaints).
     juce::Font mono(font);
     mono.setTypefaceName(juce::Font::getDefaultMonospacedFontName());
-    return juce::Typeface::createSystemTypefaceFor(mono);
+    if (mono.getTypefaceStyle().isEmpty() || mono.getTypefaceStyle() == juce::Font::getDefaultStyle())
+        mono.setTypefaceStyle("Regular");
+    juce::Typeface::Ptr face = juce::Typeface::createSystemTypefaceFor(mono);
+    if (face == nullptr)
+        return nullptr;
+    return face;
 }
 
 void LayerCakeLookAndFeel::drawButtonBackground(juce::Graphics& g,
@@ -159,6 +177,199 @@ void LayerCakeLookAndFeel::drawButtonBackground(juce::Graphics& g,
 
         g.setColour(borderColour.withAlpha(juce::jlimit(0.2f, 1.0f, borderColour.getFloatAlpha() + 0.1f)));
         g.drawRoundedRectangle(bounds.reduced(1.5f), juce::jmax(2.0f, radius - 2.0f), kInnerBorderThickness);
+    }
+}
+
+void LayerCakeLookAndFeel::drawComboBox(juce::Graphics& g,
+                                        int width,
+                                        int height,
+                                        bool isButtonDown,
+                                        int buttonX,
+                                        int buttonY,
+                                        int buttonW,
+                                        int buttonH,
+                                        juce::ComboBox& box)
+{
+    juce::ignoreUnused(buttonX, buttonY, buttonW, buttonH);
+    auto bounds = juce::Rectangle<int>(0, 0, width, height).toFloat().reduced(0.5f);
+    const float radius = juce::jmin(6.0f, bounds.getHeight() * 0.45f);
+    juce::Colour fill = box.findColour(juce::ComboBox::backgroundColourId);
+    if (isButtonDown)
+        fill = fill.brighter(0.08f);
+    g.setColour(fill);
+    g.fillRoundedRectangle(bounds, radius);
+    g.setColour(box.findColour(juce::ComboBox::outlineColourId));
+    g.drawRoundedRectangle(bounds, radius, kButtonBorderThickness);
+    g.setColour(m_accentCyan.withAlpha(0.75f));
+    g.drawRoundedRectangle(bounds.reduced(1.5f), juce::jmax(2.0f, radius - 2.0f), kInnerBorderThickness);
+
+    juce::Rectangle<int> arrowZone(width - 28, 0, 20, height);
+    juce::Path path;
+    path.startNewSubPath(static_cast<float>(arrowZone.getX()) + 3.0f, static_cast<float>(arrowZone.getCentreY()) - 2.0f);
+    path.lineTo(static_cast<float>(arrowZone.getCentreX()), static_cast<float>(arrowZone.getCentreY()) + 3.0f);
+    path.lineTo(static_cast<float>(arrowZone.getRight()) - 3.0f, static_cast<float>(arrowZone.getCentreY()) - 2.0f);
+    g.setColour(box.findColour(juce::ComboBox::arrowColourId).withAlpha(box.isEnabled() ? 0.95f : 0.25f));
+    g.strokePath(path, juce::PathStrokeType(2.0f));
+}
+
+void LayerCakeLookAndFeel::positionComboBoxText(juce::ComboBox& box, juce::Label& label)
+{
+    label.setBounds(1, 1, box.getWidth() - 28, box.getHeight() - 2);
+    label.setFont(getComboBoxFont(box));
+    label.setColour(juce::Label::textColourId, box.findColour(juce::ComboBox::textColourId));
+}
+
+void LayerCakeLookAndFeel::drawLinearSlider(juce::Graphics& g,
+                                            int x,
+                                            int y,
+                                            int width,
+                                            int height,
+                                            float sliderPos,
+                                            float minSliderPos,
+                                            float maxSliderPos,
+                                            juce::Slider::SliderStyle style,
+                                            juce::Slider& slider)
+{
+    if (slider.isBar())
+    {
+        g.setColour(slider.findColour(juce::Slider::trackColourId));
+        g.fillRect(slider.isHorizontal() ? juce::Rectangle<float>(static_cast<float>(x), static_cast<float>(y) + 0.5f,
+                                                                    sliderPos - static_cast<float>(x), static_cast<float>(height) - 1.0f)
+                                         : juce::Rectangle<float>(static_cast<float>(x) + 0.5f, sliderPos,
+                                                                  static_cast<float>(width) - 1.0f,
+                                                                  static_cast<float>(y) + (static_cast<float>(height) - sliderPos)));
+
+        drawLinearSliderOutline(g, x, y, width, height, style, slider);
+        return;
+    }
+
+    const bool isTwoVal =
+        (style == juce::Slider::SliderStyle::TwoValueVertical || style == juce::Slider::SliderStyle::TwoValueHorizontal);
+    const bool isThreeVal =
+        (style == juce::Slider::SliderStyle::ThreeValueVertical || style == juce::Slider::SliderStyle::ThreeValueHorizontal);
+
+    const float trackWidth =
+        juce::jmin(5.0f, slider.isHorizontal() ? static_cast<float>(height) * 0.22f : static_cast<float>(width) * 0.22f);
+
+    juce::Point<float> startPoint(slider.isHorizontal() ? static_cast<float>(x) : static_cast<float>(x) + static_cast<float>(width) * 0.5f,
+                                 slider.isHorizontal() ? static_cast<float>(y) + static_cast<float>(height) * 0.5f
+                                                       : static_cast<float>(height + y));
+
+    juce::Point<float> endPoint(slider.isHorizontal() ? static_cast<float>(width + x) : startPoint.x,
+                                slider.isHorizontal() ? startPoint.y : static_cast<float>(y));
+
+    juce::Path backgroundTrack;
+    backgroundTrack.startNewSubPath(startPoint);
+    backgroundTrack.lineTo(endPoint);
+    g.setColour(slider.findColour(juce::Slider::backgroundColourId));
+    g.strokePath(backgroundTrack, {trackWidth, juce::PathStrokeType::curved, juce::PathStrokeType::rounded});
+
+    juce::Path valueTrack;
+    juce::Point<float> minPoint;
+    juce::Point<float> maxPoint;
+    juce::Point<float> thumbPoint;
+
+    if (isTwoVal || isThreeVal)
+    {
+        minPoint = {slider.isHorizontal() ? minSliderPos : static_cast<float>(width) * 0.5f,
+                    slider.isHorizontal() ? static_cast<float>(height) * 0.5f : minSliderPos};
+
+        if (isThreeVal)
+            thumbPoint = {slider.isHorizontal() ? sliderPos : static_cast<float>(width) * 0.5f,
+                          slider.isHorizontal() ? static_cast<float>(height) * 0.5f : sliderPos};
+
+        maxPoint = {slider.isHorizontal() ? maxSliderPos : static_cast<float>(width) * 0.5f,
+                    slider.isHorizontal() ? static_cast<float>(height) * 0.5f : maxSliderPos};
+    }
+    else
+    {
+        const float kx = slider.isHorizontal() ? sliderPos : (static_cast<float>(x) + static_cast<float>(width) * 0.5f);
+        const float ky = slider.isHorizontal() ? (static_cast<float>(y) + static_cast<float>(height) * 0.5f) : sliderPos;
+        minPoint = startPoint;
+        maxPoint = {kx, ky};
+    }
+
+    const int thumbWidth = getSliderThumbRadius(slider);
+
+    valueTrack.startNewSubPath(minPoint);
+    valueTrack.lineTo(isThreeVal ? thumbPoint : maxPoint);
+    g.setColour(slider.findColour(juce::Slider::trackColourId));
+    g.strokePath(valueTrack, {trackWidth, juce::PathStrokeType::curved, juce::PathStrokeType::rounded});
+
+    if (!isTwoVal)
+    {
+        const juce::Point<float> centre = isThreeVal ? thumbPoint : maxPoint;
+        const float d = static_cast<float>(thumbWidth);
+        g.setColour(slider.findColour(juce::Slider::thumbColourId));
+        g.fillEllipse(juce::Rectangle<float>(d, d).withCentre(centre));
+        g.setColour(m_accentCyan.withAlpha(slider.isEnabled() ? 0.5f : 0.22f));
+        g.drawEllipse(juce::Rectangle<float>(d, d).withCentre(centre), kInnerBorderThickness);
+    }
+
+    if (isTwoVal || isThreeVal)
+    {
+        const float sr = juce::jmin(trackWidth, (slider.isHorizontal() ? static_cast<float>(height) : static_cast<float>(width)) * 0.4f);
+        const juce::Colour pointerColour = slider.findColour(juce::Slider::thumbColourId);
+
+        if (slider.isHorizontal())
+        {
+            drawPointer(g, minSliderPos - sr,
+                        juce::jmax(0.0f, static_cast<float>(y) + static_cast<float>(height) * 0.5f - trackWidth * 2.0f),
+                        trackWidth * 2.0f, pointerColour, 2);
+            drawPointer(g, maxSliderPos - trackWidth,
+                        juce::jmin(static_cast<float>(y + height) - trackWidth * 2.0f,
+                                   static_cast<float>(y) + static_cast<float>(height) * 0.5f),
+                        trackWidth * 2.0f, pointerColour, 4);
+        }
+        else
+        {
+            drawPointer(g, juce::jmax(0.0f, static_cast<float>(x) + static_cast<float>(width) * 0.5f - trackWidth * 2.0f),
+                        minSliderPos - trackWidth, trackWidth * 2.0f, pointerColour, 1);
+            drawPointer(g,
+                        juce::jmin(static_cast<float>(x + width) - trackWidth * 2.0f,
+                                   static_cast<float>(x) + static_cast<float>(width) * 0.5f),
+                        maxSliderPos - sr, trackWidth * 2.0f, pointerColour, 3);
+        }
+    }
+}
+
+void LayerCakeLookAndFeel::drawTickBox(juce::Graphics& g,
+                                      juce::Component& component,
+                                      float x,
+                                      float y,
+                                      float w,
+                                      float h,
+                                      const bool ticked,
+                                      const bool isEnabled,
+                                      const bool shouldDrawButtonAsHighlighted,
+                                      const bool shouldDrawButtonAsDown)
+{
+    juce::ignoreUnused(shouldDrawButtonAsDown);
+    juce::Rectangle<float> tickBounds(x, y, w, h);
+    const float radius = juce::jmin(4.0f, h * 0.28f);
+
+    g.setColour(m_panel.darker(0.15f));
+    g.fillRoundedRectangle(tickBounds, radius);
+
+    if (shouldDrawButtonAsHighlighted && isEnabled)
+    {
+        g.setColour(m_accentCyan.withAlpha(0.12f));
+        g.fillRoundedRectangle(tickBounds.reduced(1.0f), juce::jmax(1.5f, radius - 1.0f));
+    }
+
+    g.setColour(component.findColour(juce::ToggleButton::tickDisabledColourId));
+    g.drawRoundedRectangle(tickBounds, radius, kButtonBorderThickness);
+    g.setColour(m_accentCyan.withAlpha(isEnabled ? 0.45f : 0.2f));
+    g.drawRoundedRectangle(tickBounds.reduced(1.2f), juce::jmax(2.0f, radius - 1.2f), kInnerBorderThickness);
+
+    if (ticked)
+    {
+        juce::Colour tickCol = component.findColour(juce::ToggleButton::tickColourId);
+        if (!isEnabled)
+            tickCol = tickCol.withMultipliedAlpha(0.45f);
+        g.setColour(tickCol);
+        auto tick = getTickShape(0.75f);
+        g.fillPath(tick, tick.getTransformToScaleToFit(tickBounds.reduced(4, 5).toFloat(), false));
     }
 }
 

@@ -1,4 +1,5 @@
 #include "StageTimingComponent.h"
+#include "LayerCakeLookAndFeel.h"
 
 #include <algorithm>
 #include <cmath>
@@ -19,12 +20,17 @@ void StageTimingComponent::update(const StageTiming& timing)
 void StageTimingComponent::paint(juce::Graphics& g)
 {
     auto bounds = getLocalBounds();
-    g.fillAll(juce::Colour(0xff1a1a2e));
+    auto& lf = getLookAndFeel();
+    const juce::Colour panel = lf.findColour(juce::ComboBox::backgroundColourId);
+    const juce::Colour terminal = lf.findColour(juce::Label::textColourId);
+    const juce::Colour dim = terminal.withAlpha(0.5f);
+
+    g.fillAll(panel);
 
     const int w = bounds.getWidth();
 
-    g.setColour(juce::Colour(0xffe0e0e0));
-    g.setFont(juce::Font(11.0f));
+    g.setColour(terminal);
+    g.setFont(juce::Font(juce::FontOptions(juce::Font::getDefaultMonospacedFontName(), 11.0f, juce::Font::plain)));
     g.drawText("TIMING", 4, 2, w - 8, 14, juce::Justification::centredLeft);
 
     struct StageInfo {
@@ -33,12 +39,22 @@ void StageTimingComponent::paint(juce::Graphics& g)
         juce::Colour colour;
     };
 
+    juce::Colour c_enc(0xff35c0ff), c_t5(0xff3cff9f), c_dit(0xffff564a), c_dec(0xfff45bff), c_tot(0xfff2b950);
+    if (auto* lc = dynamic_cast<LayerCakeLookAndFeel*>(&lf))
+    {
+        c_enc = lc->getLayerColour(1).brighter(0.4f);
+        c_t5 = lc->getLayerColour(4).brighter(0.4f);
+        c_dit = lc->getLayerColour(0).brighter(0.4f);
+        c_dec = lc->getLayerColour(5).brighter(0.4f);
+        c_tot = lc->getLayerColour(2).brighter(0.4f);
+    }
+
     StageInfo stages[] = {
-        {"VAE Enc", m_timing.vae_encode_ms, juce::Colour(0xff42a5f5)},
-        {"T5",      m_timing.t5_encode_ms,  juce::Colour(0xff66bb6a)},
-        {"DiT",     m_timing.sampling_total_ms, juce::Colour(0xffef5350)},
-        {"VAE Dec", m_timing.vae_decode_ms, juce::Colour(0xffab47bc)},
-        {"Total",   m_timing.total_ms,      juce::Colour(0xffffa726)},
+        {"VAE Enc", m_timing.vae_encode_ms, c_enc},
+        {"T5",      m_timing.t5_encode_ms,  c_t5},
+        {"DiT",     m_timing.sampling_total_ms, c_dit},
+        {"VAE Dec", m_timing.vae_decode_ms, c_dec},
+        {"Total",   m_timing.total_ms,      c_tot},
     };
 
     double max_ms = 1.0;
@@ -51,12 +67,12 @@ void StageTimingComponent::paint(juce::Graphics& g)
     const int bar_area_width = w - label_width - value_width - 12;
     int y = 20;
 
-    g.setFont(juce::Font(10.0f));
+    g.setFont(juce::Font(juce::FontOptions(juce::Font::getDefaultMonospacedFontName(), 10.0f, juce::Font::plain)));
 
     for (const auto& s : stages)
     {
         // Label
-        g.setColour(juce::Colour(0xffaaaaaa));
+        g.setColour(dim);
         g.drawText(s.name, 4, y, label_width, bar_height, juce::Justification::centredRight);
 
         // Bar
@@ -72,7 +88,7 @@ void StageTimingComponent::paint(juce::Graphics& g)
         if (juce::String(s.name) == "DiT" && m_timing.steps > 0)
             val += " (" + juce::String(m_timing.steps) + " steps)";
 
-        g.setColour(juce::Colour(0xffe0e0e0));
+        g.setColour(terminal);
         g.drawText(val, label_width + bar_area_width + 8, y, value_width, bar_height,
                    juce::Justification::centredLeft);
 

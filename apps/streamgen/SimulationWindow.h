@@ -22,6 +22,9 @@ public:
     void resized() override;
     void paint(juce::Graphics& g) override;
 
+    /// Refresh file label and transport buttons from processor (e.g. after default load).
+    void sync_from_processor();
+
 private:
     void timerCallback() override;
     void load_file();
@@ -51,7 +54,7 @@ public:
     /// Args:
     ///     processor: The audio processor to load simulation files into.
     explicit SimulationWindow(StreamGenProcessor& processor)
-        : juce::DocumentWindow("Simulation", juce::Colour(0xff1a1a2e),
+        : juce::DocumentWindow("simulation", juce::Colours::black,
                                juce::DocumentWindow::closeButton)
     {
         setContentOwned(new SimulationPanel(processor), true);
@@ -61,6 +64,13 @@ public:
     }
 
     void closeButtonPressed() override { setVisible(false); }
+
+    void sync_from_processor()
+    {
+        auto* panel = dynamic_cast<SimulationPanel*>(getContentComponent());
+        if (panel != nullptr)
+            panel->sync_from_processor();
+    }
 };
 
 } // namespace streamgen

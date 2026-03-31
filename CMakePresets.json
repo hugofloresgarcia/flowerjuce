@@ -1,0 +1,60 @@
+{
+  "version": 3,
+  "cmakeMinimumRequired": {
+    "major": 3,
+    "minor": 19,
+    "patch": 0
+  },
+  "configurePresets": [
+    {
+      "name": "debug",
+      "displayName": "Debug — binary dir: flowerjuce/build (default for development)",
+      "binaryDir": "${sourceDir}/build",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug"
+      }
+    },
+    {
+      "name": "debug-mlx",
+      "displayName": "Debug + SAO_ENABLE_MLX — binary dir: flowerjuce/build",
+      "inherits": "debug",
+      "cacheVariables": {
+        "SAO_ENABLE_MLX": "ON"
+      }
+    },
+    {
+      "name": "release",
+      "displayName": "Release — binary dir: flowerjuce/build",
+      "binaryDir": "${sourceDir}/build",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release"
+      }
+    },
+    {
+      "name": "release-mlx",
+      "displayName": "Release + SAO_ENABLE_MLX — binary dir: flowerjuce/build",
+      "inherits": "release",
+      "cacheVariables": {
+        "SAO_ENABLE_MLX": "ON"
+      }
+    }
+  ],
+  "buildPresets": [
+    {
+      "name": "debug",
+      "configurePreset": "debug"
+    },
+    {
+      "name": "debug-mlx",
+      "configurePreset": "debug-mlx"
+    },
+    {
+      "name": "release",
+      "configurePreset": "release"
+    },
+    {
+      "name": "release-mlx",
+      "configurePreset": "release-mlx"
+    }
+  ]
+}

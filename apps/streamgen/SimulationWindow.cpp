@@ -1,13 +1,16 @@
 #include "SimulationWindow.h"
+#include "LayerCakeLookAndFeel.h"
 
 namespace streamgen {
 
 SimulationPanel::SimulationPanel(StreamGenProcessor& processor)
     : m_processor(processor)
 {
+    LayerCakeLookAndFeel::setControlButtonType(m_load_button, LayerCakeLookAndFeel::ControlButtonType::Preset);
     m_load_button.onClick = [this]() { load_file(); };
     addAndMakeVisible(m_load_button);
 
+    LayerCakeLookAndFeel::setControlButtonType(m_play_button, LayerCakeLookAndFeel::ControlButtonType::Clock);
     m_play_button.onClick = [this]()
     {
         m_processor.simulation_playing.store(true, std::memory_order_relaxed);
@@ -15,6 +18,7 @@ SimulationPanel::SimulationPanel(StreamGenProcessor& processor)
     };
     addAndMakeVisible(m_play_button);
 
+    LayerCakeLookAndFeel::setControlButtonType(m_pause_button, LayerCakeLookAndFeel::ControlButtonType::Pattern);
     m_pause_button.onClick = [this]()
     {
         m_processor.simulation_playing.store(false, std::memory_order_relaxed);
@@ -22,6 +26,7 @@ SimulationPanel::SimulationPanel(StreamGenProcessor& processor)
     };
     addAndMakeVisible(m_pause_button);
 
+    LayerCakeLookAndFeel::setControlButtonType(m_stop_button, LayerCakeLookAndFeel::ControlButtonType::Record);
     m_stop_button.onClick = [this]()
     {
         m_processor.simulation_playing.store(false, std::memory_order_relaxed);
@@ -30,7 +35,6 @@ SimulationPanel::SimulationPanel(StreamGenProcessor& processor)
     };
     addAndMakeVisible(m_stop_button);
 
-    m_loop_toggle.setColour(juce::ToggleButton::textColourId, juce::Colour(0xffe0e0e0));
     m_loop_toggle.setToggleState(false, juce::dontSendNotification);
     m_loop_toggle.onClick = [this]()
     {
@@ -39,13 +43,11 @@ SimulationPanel::SimulationPanel(StreamGenProcessor& processor)
     addAndMakeVisible(m_loop_toggle);
 
     m_speed_label.setText("Speed:", juce::dontSendNotification);
-    m_speed_label.setColour(juce::Label::textColourId, juce::Colour(0xffe0e0e0));
     addAndMakeVisible(m_speed_label);
 
     m_speed_slider.setRange(0.25, 4.0, 0.25);
     m_speed_slider.setValue(1.0);
     m_speed_slider.setTextBoxStyle(juce::Slider::TextBoxRight, false, 40, 20);
-    m_speed_slider.setColour(juce::Slider::textBoxTextColourId, juce::Colour(0xffe0e0e0));
     m_speed_slider.onValueChange = [this]()
     {
         m_processor.simulation_speed.store(
@@ -54,12 +56,14 @@ SimulationPanel::SimulationPanel(StreamGenProcessor& processor)
     addAndMakeVisible(m_speed_slider);
 
     m_file_label.setText("No file loaded", juce::dontSendNotification);
-    m_file_label.setColour(juce::Label::textColourId, juce::Colour(0xffaaaaaa));
+    m_file_label.setColour(
+        juce::Label::textColourId,
+        getLookAndFeel().findColour(juce::Label::textColourId).withAlpha(0.55f));
     addAndMakeVisible(m_file_label);
 
     m_position_label.setText("00:00.000 / 00:00.000", juce::dontSendNotification);
-    m_position_label.setColour(juce::Label::textColourId, juce::Colour(0xffe0e0e0));
-    m_position_label.setFont(juce::Font(juce::Font::getDefaultMonospacedFontName(), 12.0f, juce::Font::plain));
+    m_position_label.setFont(
+        juce::Font(juce::FontOptions(juce::Font::getDefaultMonospacedFontName(), 12.0f, juce::Font::plain)));
     addAndMakeVisible(m_position_label);
 
     m_position_slider.setRange(0.0, 1.0, 0.001);
@@ -122,7 +126,7 @@ void SimulationPanel::resized()
 
 void SimulationPanel::paint(juce::Graphics& g)
 {
-    g.fillAll(juce::Colour(0xff1a1a2e));
+    g.fillAll(getLookAndFeel().findColour(juce::ComboBox::backgroundColourId));
 }
 
 void SimulationPanel::timerCallback()
@@ -167,15 +171,26 @@ void SimulationPanel::load_file()
         });
 }
 
+void SimulationPanel::sync_from_processor()
+{
+    juce::String name = m_processor.simulation_display_name();
+    if (name.isNotEmpty())
+    {
+        m_loaded_filename = name;
+        m_file_label.setText(m_loaded_filename, juce::dontSendNotification);
+    }
+    update_transport_state();
+}
+
 void SimulationPanel::update_transport_state()
 {
-    bool active = m_processor.simulation_active.load(std::memory_order_relaxed);
+    bool has_buffer = m_processor.simulation_total_samples.load(std::memory_order_relaxed) > 0;
     bool playing = m_processor.simulation_playing.load(std::memory_order_relaxed);
 
-    m_play_button.setEnabled(active && !playing);
-    m_pause_button.setEnabled(active && playing);
-    m_stop_button.setEnabled(active);
-    m_position_slider.setEnabled(active);
+    m_play_button.setEnabled(has_buffer && !playing);
+    m_pause_button.setEnabled(has_buffer && playing);
+    m_stop_button.setEnabled(has_buffer);
+    m_position_slider.setEnabled(has_buffer);
 }
 
 } // namespace streamgen

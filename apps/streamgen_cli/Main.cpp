@@ -132,6 +132,7 @@ static void write_timing_json(
     float keep_ratio,
     int steps,
     float cfg,
+    float schedule_delay_s,
     const std::string& prompt,
     const std::string& input_file,
     double input_duration_s)
@@ -144,6 +145,7 @@ static void write_timing_json(
         << ", \"keep_ratio\": " << keep_ratio
         << ", \"steps\": " << steps
         << ", \"cfg\": " << cfg
+        << ", \"schedule_delay_s\": " << schedule_delay_s
         << ", \"prompt\": \"" << prompt << "\""
         << " },\n";
 
@@ -194,10 +196,12 @@ static void print_usage(const char* prog)
               << "  --keep-ratio FLOAT       Inpaint keep ratio 0.0-1.0 (default: 0.5)\n"
               << "  --steps N                Sampling steps (default: 8)\n"
               << "  --cfg SCALE              CFG scale (default: 7.0)\n"
+              << "  --schedule-delay SEC     Seconds after keep_end where output lands (default: 0)\n"
               << "  --seed N                 Random seed (default: 42)\n"
               << "  --crossfade-ms N         Crossfade in milliseconds (default: 100)\n"
               << "  --cuda                   Use CUDA execution provider\n"
-              << "  --coreml                 Use CoreML execution provider (macOS)\n";
+              << "  --coreml                 Use CoreML execution provider (macOS)\n"
+              << "  --mlx-vae                Zenon VAE via MLX Metal (requires SAO_ENABLE_MLX build)\n";
 }
 
 int main(int argc, char* argv[])
@@ -214,10 +218,12 @@ int main(int argc, char* argv[])
     float keep_ratio = 0.5f;
     int steps = 8;
     float cfg_scale = 7.0f;
+    float schedule_delay_seconds = 0.0f;
     uint32_t seed = 42;
     int crossfade_ms = 100;
     bool use_cuda = false;
     bool use_coreml = false;
+    bool use_mlx_vae = false;
 
     for (int i = 1; i < argc; ++i)
     {
@@ -232,10 +238,13 @@ int main(int argc, char* argv[])
         else if (arg == "--keep-ratio" && i + 1 < argc) keep_ratio = std::stof(argv[++i]);
         else if (arg == "--steps" && i + 1 < argc) steps = std::stoi(argv[++i]);
         else if (arg == "--cfg" && i + 1 < argc) cfg_scale = std::stof(argv[++i]);
+        else if (arg == "--schedule-delay" && i + 1 < argc)
+            schedule_delay_seconds = std::stof(argv[++i]);
         else if (arg == "--seed" && i + 1 < argc) seed = static_cast<uint32_t>(std::stoul(argv[++i]));
         else if (arg == "--crossfade-ms" && i + 1 < argc) crossfade_ms = std::stoi(argv[++i]);
         else if (arg == "--cuda") use_cuda = true;
         else if (arg == "--coreml") use_coreml = true;
+        else if (arg == "--mlx-vae") use_mlx_vae = true;
         else if (arg == "--help" || arg == "-h") { print_usage(argv[0]); return 0; }
         else { std::cerr << "Unknown argument: " << arg << std::endl; print_usage(argv[0]); return 1; }
     }
@@ -249,7 +258,8 @@ int main(int argc, char* argv[])
     std::cout << "Output:   " << output_file << std::endl;
     std::cout << "Prompt:   " << prompt << std::endl;
     std::cout << "Hop: " << hop_seconds << "s, Keep: " << keep_ratio
-              << ", Steps: " << steps << ", CFG: " << cfg_scale << std::endl;
+              << ", Steps: " << steps << ", CFG: " << cfg_scale
+              << ", Schedule delay: " << schedule_delay_seconds << "s" << std::endl;
 
     // --- Load input audio ---
     juce::AudioFormatManager format_manager;
@@ -263,7 +273,7 @@ int main(int argc, char* argv[])
     streamgen::StreamGenProcessor processor;
     streamgen::InferenceWorker worker(processor);
 
-    worker.load_pipeline(manifest_path, use_cuda, use_coreml);
+    worker.load_pipeline(manifest_path, use_cuda, use_coreml, use_mlx_vae);
     worker.set_prompt(prompt);
 
     auto& scheduler = processor.scheduler();
@@ -271,6 +281,7 @@ int main(int argc, char* argv[])
     scheduler.keep_ratio.store(keep_ratio, std::memory_order_relaxed);
     scheduler.steps.store(steps, std::memory_order_relaxed);
     scheduler.cfg_scale.store(cfg_scale, std::memory_order_relaxed);
+    scheduler.schedule_delay_seconds.store(schedule_delay_seconds, std::memory_order_relaxed);
     scheduler.generation_enabled.store(true, std::memory_order_relaxed);
 
     int crossfade_samples = crossfade_ms * 44100 / 1000;
@@ -347,7 +358,7 @@ int main(int argc, char* argv[])
     if (!timing_json_file.empty())
     {
         write_timing_json(timing_json_file, timing_entries,
-                          hop_seconds, keep_ratio, steps, cfg_scale,
+                          hop_seconds, keep_ratio, steps, cfg_scale, schedule_delay_seconds,
                           prompt, input_file, input_duration_s);
         std::cout << "Timing report written to " << timing_json_file << std::endl;
     }

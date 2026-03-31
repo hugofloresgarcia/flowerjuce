@@ -21,8 +21,10 @@ public:
     ///     last_job_id: ID of the most recent generation job.
     ///     worker_busy: Whether the worker is currently processing a job.
     ///     source_label: Input source description (e.g. "Live Mic", "Simulation (file.wav)").
+    ///     last_land_timeline: Optional one-line summary of where/when the last gen landed on the timeline.
     void update(int queue_depth, int64_t generation_count, double last_latency_ms,
-                int64_t last_job_id, bool worker_busy, const juce::String& source_label);
+                int64_t last_job_id, bool worker_busy, const juce::String& source_label,
+                const juce::String& last_land_timeline = {});
 
     void paint(juce::Graphics& g) override;
 
@@ -33,6 +35,7 @@ private:
     int64_t m_last_job_id = -1;
     bool m_worker_busy = false;
     juce::String m_source_label = "Not started";
+    juce::String m_last_land_timeline;
 };
 
 } // namespace streamgen

@@ -10,16 +10,30 @@ juce_add_gui_app(StreamGenApp
 )
 
 target_sources(StreamGenApp PRIVATE
+    ../layercake/core/LayerCakeLookAndFeel.cpp
     Main.cpp
+    StreamGenDebugLog.h
     StreamGenProcessor.h
     StreamGenProcessor.cpp
     StreamGenComponent.h
     StreamGenComponent.cpp
     InferenceWorker.h
     InferenceWorker.cpp
+    InferenceSnapshot.h
+    AudioThreadTelemetry.h
+    AudioThreadTelemetry.cpp
+    OperatorDashboardWindow.h
+    OperatorDashboardWindow.cpp
+    OperatorVizComponent.h
+    OperatorVizComponent.cpp
+    DiagnosticLogWriter.h
+    DiagnosticLogWriter.cpp
     GenerationScheduler.h
     GenerationScheduler.cpp
+    GenerationTimelineStore.h
+    GenerationTimelineStore.cpp
     TimeRuler.h
+    MusicalTime.h
     WaveformTimelineComponent.h
     WaveformTimelineComponent.cpp
     StageTimingComponent.h
@@ -32,6 +46,10 @@ target_sources(StreamGenApp PRIVATE
     MixerComponent.cpp
     SimulationWindow.h
     SimulationWindow.cpp
+)
+
+target_include_directories(StreamGenApp PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/../layercake/core
 )
 
 target_link_libraries(StreamGenApp PRIVATE

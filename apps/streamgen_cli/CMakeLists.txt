@@ -14,12 +14,17 @@ set(STREAMGEN_APP_DIR ${CMAKE_CURRENT_SOURCE_DIR}/../streamgen)
 
 target_sources(StreamGenCLI PRIVATE
     Main.cpp
+    ${STREAMGEN_APP_DIR}/StreamGenDebugLog.h
     ${STREAMGEN_APP_DIR}/StreamGenProcessor.h
     ${STREAMGEN_APP_DIR}/StreamGenProcessor.cpp
+    ${STREAMGEN_APP_DIR}/AudioThreadTelemetry.h
+    ${STREAMGEN_APP_DIR}/AudioThreadTelemetry.cpp
     ${STREAMGEN_APP_DIR}/InferenceWorker.h
     ${STREAMGEN_APP_DIR}/InferenceWorker.cpp
     ${STREAMGEN_APP_DIR}/GenerationScheduler.h
     ${STREAMGEN_APP_DIR}/GenerationScheduler.cpp
+    ${STREAMGEN_APP_DIR}/GenerationTimelineStore.h
+    ${STREAMGEN_APP_DIR}/GenerationTimelineStore.cpp
     ${STREAMGEN_APP_DIR}/TimeRuler.h
 )
 

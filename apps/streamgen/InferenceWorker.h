@@ -1,5 +1,6 @@
 #pragma once
 
+#include "InferenceSnapshot.h"
 #include "TimeRuler.h"
 #include "StreamGenProcessor.h"
 
@@ -16,6 +17,8 @@
 #include <vector>
 
 namespace streamgen {
+
+class GenerationTimelineStore;
 
 /// Background thread that runs the ZenonPipeline inference loop.
 ///
@@ -42,9 +45,16 @@ public:
     ///     use_cuda: Whether to use CUDA execution provider.
     ///     use_coreml: Whether to use CoreML execution provider (macOS).
     ///
+    /// Args:
+    ///     use_mlx_vae: When true, load Zenon VAE from MLX Metal (requires sao_inference built with SAO_ENABLE_MLX).
+    ///
     /// Returns:
     ///     true if loading succeeded.
-    bool load_pipeline(const std::string& manifest_path, bool use_cuda, bool use_coreml = false);
+    bool load_pipeline(
+        const std::string& manifest_path,
+        bool use_cuda,
+        bool use_coreml = false,
+        bool use_mlx_vae = false);
 
     /// Set the text prompt. Thread-safe — can be called from UI thread.
     ///
@@ -54,6 +64,12 @@ public:
 
     /// Get the most recent stage timing snapshot. Thread-safe.
     StageTiming last_timing() const;
+
+    /// Full timing + latent/diffusion diagnostics from the last completed job. Thread-safe.
+    InferenceSnapshot last_snapshot() const;
+
+    /// When true, `generate()` prints stdout timing (default off for GUI; CLI uses verbose pipeline).
+    void set_pipeline_verbose(bool verbose);
 
     /// Crossfade length in samples for overlap-add writes.
     std::atomic<int> crossfade_samples{4410}; // 100ms @ 44100
@@ -74,6 +90,7 @@ private:
     void update_tokenization();
 
     StreamGenProcessor& m_processor;
+    GenerationTimelineStore* m_timeline = nullptr;
 
     std::unique_ptr<sao::ZenonPipeline> m_pipeline;
     std::unique_ptr<sao::Tokenizer> m_tokenizer;
@@ -88,9 +105,17 @@ private:
     std::vector<int64_t> m_input_ids;
     std::vector<int64_t> m_attention_mask;
 
-    // Stage timing (worker writes, UI reads)
-    mutable std::mutex m_timing_mutex;
+    /// Masked T5 embeddings (64 * cond_token_dim) when input_ids/mask match m_t5_cache_*.
+    std::vector<float> m_cached_t5_masked;
+    std::vector<int64_t> m_t5_cache_ids;
+    std::vector<int64_t> m_t5_cache_mask;
+    bool m_have_t5_cache = false;
+
+    // Timing + snapshot (worker writes, UI reads)
+    mutable std::mutex m_worker_state_mutex;
     StageTiming m_last_timing;
+    InferenceSnapshot m_last_snapshot;
+    bool m_pipeline_verbose = false;
 };
 
 } // namespace streamgen
