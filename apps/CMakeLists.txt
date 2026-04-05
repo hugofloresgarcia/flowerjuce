@@ -14,5 +14,6 @@ else()
     add_subdirectory(zenon_cli)
     add_subdirectory(streamgen)
     add_subdirectory(streamgen_cli)
+    add_subdirectory(wham)
 endif()
 
