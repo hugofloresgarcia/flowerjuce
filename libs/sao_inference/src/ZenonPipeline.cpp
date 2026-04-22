@@ -58,8 +58,8 @@ ZenonPipeline::ZenonPipeline(const ZenonPipelineConfig& config)
     if (m_verbose)
         std::cout << "[ZenonPipeline] Loading models..." << std::endl;
 
-    m_t5 = std::make_unique<T5Encoder>(config.t5_onnx_path, config.use_cuda, config.use_coreml);
-    m_dit = std::make_unique<DiTInpaintModel>(config.dit_onnx_path, config.use_cuda, config.use_coreml);
+    m_t5 = std::make_unique<T5Encoder>(config.t5_onnx_path, config.use_cuda, config.use_coreml, config.use_migraphx);
+    m_dit = std::make_unique<DiTInpaintModel>(config.dit_onnx_path, config.use_cuda, config.use_coreml, config.use_migraphx);
 
     if (config.use_mlx_vae)
     {
@@ -77,9 +77,9 @@ ZenonPipeline::ZenonPipeline(const ZenonPipelineConfig& config)
     {
         // CoreML cannot handle the VAE (input dim 524288 > CoreML's 16384 limit)
         m_vae_encoder = std::make_unique<OnnxVaeEncoder>(
-            config.vae_encoder_onnx_path, config.use_cuda, false);
+            config.vae_encoder_onnx_path, config.use_cuda, false, config.use_migraphx);
         m_vae_decoder = std::make_unique<OnnxVaeDecoder>(
-            config.vae_decoder_onnx_path, config.vae_scale, config.use_cuda, false);
+            config.vae_decoder_onnx_path, config.vae_scale, config.use_cuda, false, config.use_migraphx);
     }
     m_number_embedder = std::make_unique<NumberEmbedder>(config.number_embedder_weights_dir);
 
@@ -131,20 +131,19 @@ std::vector<float> ZenonPipeline::generate(
             std::cout << "[ZenonPipeline] Using pre-encoded streamgen latent" << std::endl;
     } else {
         assert(!streamgen_audio.empty());
+        std::cout << "[ZenonPipeline] VAE-encoding streamgen audio..." << std::flush;
         streamgen_latent = m_vae_encoder->encode(streamgen_audio, m_config.sample_size, C);
-        if (m_verbose)
-            std::cout << "[ZenonPipeline] Encoded streamgen audio -> latent" << std::endl;
+        std::cout << " done (" << elapsed_ms(t0) << " ms)" << std::endl;
     }
 
     if (!input_latent_in.empty()) {
         input_latent = input_latent_in;
-        if (m_verbose)
-            std::cout << "[ZenonPipeline] Using pre-encoded input latent" << std::endl;
     } else {
         assert(!input_audio.empty());
+        auto t_enc2 = Clock::now();
+        std::cout << "[ZenonPipeline] VAE-encoding input audio..." << std::flush;
         input_latent = m_vae_encoder->encode(input_audio, m_config.sample_size, C);
-        if (m_verbose)
-            std::cout << "[ZenonPipeline] Encoded input audio -> latent" << std::endl;
+        std::cout << " done (" << elapsed_ms(t_enc2) << " ms)" << std::endl;
     }
 
     assert(static_cast<int>(streamgen_latent.size()) == latent_size);
@@ -179,6 +178,7 @@ std::vector<float> ZenonPipeline::generate(
         m_timing.t5_encode_ms = 0.0;
     } else {
         t0 = Clock::now();
+        std::cout << "[ZenonPipeline] T5-encoding prompt..." << std::flush;
         m_last_masked_t5 = m_t5->encode(input_ids, attention_mask);
         for (int i = 0; i < T5_SEQ_LEN; ++i) {
             float mask_val = static_cast<float>(attention_mask[i]);
@@ -187,6 +187,7 @@ std::vector<float> ZenonPipeline::generate(
             }
         }
         m_timing.t5_encode_ms = elapsed_ms(t0);
+        std::cout << " done (" << m_timing.t5_encode_ms << " ms)" << std::endl;
         t5_masked_ptr = &m_last_masked_t5;
     }
 
@@ -229,6 +230,7 @@ std::vector<float> ZenonPipeline::generate(
     if (m_collect_step_diagnostics)
         m_diagnostics.diffusion_steps.reserve(static_cast<size_t>(steps));
     t0 = Clock::now();
+    std::cout << "[ZenonPipeline] Sampling " << steps << " DiT steps..." << std::endl;
 
     SamplerConfig sampler_config;
     sampler_config.steps = steps;
@@ -241,7 +243,9 @@ std::vector<float> ZenonPipeline::generate(
             if (phase_callback)
                 phase_callback(ZenonInferencePhase::DiT, step + 1);
 
-            m_timing.sampling_step_ms.push_back(elapsed_ms(t0));
+            double step_ms = elapsed_ms(t0);
+            std::cout << "[ZenonPipeline]   DiT step " << step << "/" << steps << " done (" << step_ms << " ms)" << std::endl;
+            m_timing.sampling_step_ms.push_back(step_ms);
             t0 = Clock::now();
 
             if (m_collect_step_diagnostics)
@@ -273,10 +277,13 @@ std::vector<float> ZenonPipeline::generate(
         phase_callback(ZenonInferencePhase::Decode, 0);
 
     t0 = Clock::now();
+    std::cout << "[ZenonPipeline] VAE-decoding latent..." << std::flush;
     auto audio = m_vae_decoder->decode(sampled, T);
     m_timing.vae_decode_ms = elapsed_ms(t0);
+    std::cout << " done (" << m_timing.vae_decode_ms << " ms)" << std::endl;
 
     m_timing.total_ms = elapsed_ms(total_start);
+    std::cout << "[ZenonPipeline] Generation complete: " << m_timing.total_ms << " ms total" << std::endl;
 
     compute_mean_std(sampled, m_diagnostics.sampled_latent);
 

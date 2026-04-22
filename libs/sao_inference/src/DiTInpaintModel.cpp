@@ -5,8 +5,8 @@
 
 namespace sao {
 
-DiTInpaintModel::DiTInpaintModel(const std::string& onnx_path, bool use_cuda, bool use_coreml)
-    : m_model(onnx_path, use_cuda, use_coreml)
+DiTInpaintModel::DiTInpaintModel(const std::string& onnx_path, bool use_cuda, bool use_coreml, bool use_migraphx)
+    : m_model(onnx_path, use_cuda, use_coreml, use_migraphx)
 {
     auto session = &m_model;
 

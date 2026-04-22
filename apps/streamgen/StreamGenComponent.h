@@ -45,7 +45,8 @@ public:
         const std::string& manifest_path,
         bool use_cuda,
         bool use_coreml = false,
-        bool use_mlx_vae = false);
+        bool use_mlx_vae = false,
+        bool use_migraphx = false);
 
     void resized() override;
     void paint(juce::Graphics& g) override;

@@ -116,17 +116,12 @@ juce::Font LayerCakeLookAndFeel::getPopupMenuFont()
 
 juce::Typeface::Ptr LayerCakeLookAndFeel::getTypefaceForFont(const juce::Font& font)
 {
-    // Match Font::Native::getDefaultPlatformTypefaceForFont: do not pass the "<Regular>" style
-    // placeholder through to CoreText / HarfBuzz unchanged — that breaks shaping and can trigger
-    // repeated jasserts in String (ASCII) paths elsewhere (e.g. TextEditor while the UI timer repaints).
+    // Force monospaced font for the entire UI.  Delegate to the parent LookAndFeel so JUCE
+    // resolves the placeholder name (e.g. "<Default Monospaced>" → "DejaVu Sans Mono") and
+    // handles platform-specific style fallbacks before handing off to FreeType / CoreText.
     juce::Font mono(font);
     mono.setTypefaceName(juce::Font::getDefaultMonospacedFontName());
-    if (mono.getTypefaceStyle().isEmpty() || mono.getTypefaceStyle() == juce::Font::getDefaultStyle())
-        mono.setTypefaceStyle("Regular");
-    juce::Typeface::Ptr face = juce::Typeface::createSystemTypefaceFor(mono);
-    if (face == nullptr)
-        return nullptr;
-    return face;
+    return juce::LookAndFeel::getTypefaceForFont(mono);
 }
 
 void LayerCakeLookAndFeel::drawButtonBackground(juce::Graphics& g,

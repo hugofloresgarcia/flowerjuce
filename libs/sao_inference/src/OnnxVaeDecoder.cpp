@@ -6,8 +6,9 @@ OnnxVaeDecoder::OnnxVaeDecoder(
     const std::string& onnx_path,
     float vae_scale,
     bool use_cuda,
-    bool use_coreml)
-    : m_decoder(onnx_path, vae_scale, use_cuda, use_coreml)
+    bool use_coreml,
+    bool use_migraphx)
+    : m_decoder(onnx_path, vae_scale, use_cuda, use_coreml, use_migraphx)
 {
 }
 

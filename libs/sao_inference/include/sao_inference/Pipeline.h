@@ -21,6 +21,7 @@ struct PipelineConfig {
     float vae_scale = 1.0f;
     bool use_cuda = false;
     bool use_coreml = false;
+    bool use_migraphx = false;
     int sample_rate = 44100;
     int latent_length = 256;
 };

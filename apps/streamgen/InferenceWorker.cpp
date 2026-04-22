@@ -25,7 +25,8 @@ bool InferenceWorker::load_pipeline(
     const std::string& manifest_path,
     bool use_cuda,
     bool use_coreml,
-    bool use_mlx_vae)
+    bool use_mlx_vae,
+    bool use_migraphx)
 {
     DBG("InferenceWorker: loading pipeline from " + juce::String(manifest_path));
     streamgen_log("InferenceWorker::load_pipeline begin: " + juce::String(manifest_path));
@@ -33,6 +34,7 @@ bool InferenceWorker::load_pipeline(
     m_config = sao::ZenonPipelineConfig::load(manifest_path);
     m_config.use_cuda = use_cuda;
     m_config.use_coreml = use_coreml;
+    m_config.use_migraphx = use_migraphx;
     m_config.use_mlx_vae = use_mlx_vae;
 
     m_pipeline = std::make_unique<sao::ZenonPipeline>(m_config);

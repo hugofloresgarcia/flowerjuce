@@ -10,7 +10,7 @@ namespace sao {
 /// ONNX Runtime VAE decoder (wraps VAEDecoder).
 class OnnxVaeDecoder final : public IVaeDecoder {
 public:
-    explicit OnnxVaeDecoder(const std::string& onnx_path, float vae_scale, bool use_cuda, bool use_coreml);
+    explicit OnnxVaeDecoder(const std::string& onnx_path, float vae_scale, bool use_cuda, bool use_coreml, bool use_migraphx = false);
 
     std::vector<float> decode(const std::vector<float>& latents, int latent_length) override;
 

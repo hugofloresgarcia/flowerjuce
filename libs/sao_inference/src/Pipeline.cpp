@@ -27,10 +27,10 @@ Pipeline::Pipeline(const PipelineConfig& config)
 {
     auto t0 = Clock::now();
     std::cout << "[sao::Pipeline] Loading models..." << std::endl;
-    m_t5 = std::make_unique<T5Encoder>(config.t5_onnx_path, config.use_cuda, config.use_coreml);
-    m_dit = std::make_unique<DiTModel>(config.dit_onnx_path, config.use_cuda, config.use_coreml);
+    m_t5 = std::make_unique<T5Encoder>(config.t5_onnx_path, config.use_cuda, config.use_coreml, config.use_migraphx);
+    m_dit = std::make_unique<DiTModel>(config.dit_onnx_path, config.use_cuda, config.use_coreml, config.use_migraphx);
     // CoreML cannot handle the VAE (input dim > CoreML's 16384 limit)
-    m_vae = std::make_unique<VAEDecoder>(config.vae_onnx_path, config.vae_scale, config.use_cuda, false);
+    m_vae = std::make_unique<VAEDecoder>(config.vae_onnx_path, config.vae_scale, config.use_cuda, false, config.use_migraphx);
     m_number_embedder = std::make_unique<NumberEmbedder>(config.number_embedder_weights_dir);
     m_timing.model_load_ms = elapsed_ms(t0);
     std::cout << "[sao::Pipeline] All models loaded in " << m_timing.model_load_ms << " ms" << std::endl;

@@ -2,8 +2,8 @@
 
 namespace sao {
 
-OnnxVaeEncoder::OnnxVaeEncoder(const std::string& onnx_path, bool use_cuda, bool use_coreml)
-    : m_encoder(onnx_path, use_cuda, use_coreml)
+OnnxVaeEncoder::OnnxVaeEncoder(const std::string& onnx_path, bool use_cuda, bool use_coreml, bool use_migraphx)
+    : m_encoder(onnx_path, use_cuda, use_coreml, use_migraphx)
 {
 }
 

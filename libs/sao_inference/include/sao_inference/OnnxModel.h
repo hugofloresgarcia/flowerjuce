@@ -22,10 +22,11 @@ public:
     ///     use_cuda: If true, attempt to use the CUDA execution provider.
     ///     use_coreml: If true (macOS only), use the CoreML execution provider
     ///                 for GPU + Apple Neural Engine acceleration.
+    ///     use_migraphx: If true (Linux/ROCm), use the MIGraphX execution provider.
     ///
     /// Raises:
     ///     Ort::Exception if the model cannot be loaded.
-    explicit OnnxModel(const std::string& model_path, bool use_cuda = false, bool use_coreml = false);
+    explicit OnnxModel(const std::string& model_path, bool use_cuda = false, bool use_coreml = false, bool use_migraphx = false);
 
     /// Run inference with the given input tensors.
     ///

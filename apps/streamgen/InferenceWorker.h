@@ -54,7 +54,8 @@ public:
         const std::string& manifest_path,
         bool use_cuda,
         bool use_coreml = false,
-        bool use_mlx_vae = false);
+        bool use_mlx_vae = false,
+        bool use_migraphx = false);
 
     /// Set the text prompt. Thread-safe — can be called from UI thread.
     ///

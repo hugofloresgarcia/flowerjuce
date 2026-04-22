@@ -11,7 +11,7 @@ namespace sao {
 /// ONNX Runtime VAE encoder (wraps VAEEncoder).
 class OnnxVaeEncoder final : public IVaeEncoder {
 public:
-    explicit OnnxVaeEncoder(const std::string& onnx_path, bool use_cuda, bool use_coreml);
+    explicit OnnxVaeEncoder(const std::string& onnx_path, bool use_cuda, bool use_coreml, bool use_migraphx = false);
 
     std::vector<float> encode(
         const std::vector<float>& audio,

@@ -258,6 +258,7 @@ static void print_usage(const char* prog)
               << "  --crossfade-ms N         Crossfade in milliseconds (default: 100)\n"
               << "  --cuda                   Use CUDA execution provider\n"
               << "  --coreml                 Use CoreML execution provider (macOS)\n"
+              << "  --migraphx               Use MIGraphX execution provider (Linux/ROCm)\n"
               << "  --mlx-vae                Zenon VAE via MLX Metal (requires SAO_ENABLE_MLX build)\n";
 }
 
@@ -281,6 +282,7 @@ int main(int argc, char* argv[])
     int crossfade_ms = 100;
     bool use_cuda = false;
     bool use_coreml = false;
+    bool use_migraphx = false;
     bool use_mlx_vae = false;
 
     for (int i = 1; i < argc; ++i)
@@ -306,6 +308,7 @@ int main(int argc, char* argv[])
         else if (arg == "--crossfade-ms" && i + 1 < argc) crossfade_ms = std::stoi(argv[++i]);
         else if (arg == "--cuda") use_cuda = true;
         else if (arg == "--coreml") use_coreml = true;
+        else if (arg == "--migraphx") use_migraphx = true;
         else if (arg == "--mlx-vae") use_mlx_vae = true;
         else if (arg == "--help" || arg == "-h") { print_usage(argv[0]); return 0; }
         else { std::cerr << "Unknown argument: " << arg << std::endl; print_usage(argv[0]); return 1; }
@@ -343,7 +346,7 @@ int main(int argc, char* argv[])
     streamgen::StreamGenProcessor processor;
     streamgen::InferenceWorker worker(processor);
 
-    worker.load_pipeline(manifest_path, use_cuda, use_coreml, use_mlx_vae);
+    worker.load_pipeline(manifest_path, use_cuda, use_coreml, use_mlx_vae, use_migraphx);
     worker.set_prompt(prompt);
 
     auto& scheduler = processor.scheduler();

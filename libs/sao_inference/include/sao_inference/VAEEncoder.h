@@ -21,7 +21,8 @@ public:
     ///     onnx_path: Path to zenon_vae_encoder.onnx.
     ///     use_cuda: If true, use CUDA execution provider.
     ///     use_coreml: If true (macOS), use CoreML execution provider.
-    explicit VAEEncoder(const std::string& onnx_path, bool use_cuda = false, bool use_coreml = false);
+    ///     use_migraphx: If true (Linux/ROCm), use MIGraphX execution provider.
+    explicit VAEEncoder(const std::string& onnx_path, bool use_cuda = false, bool use_coreml = false, bool use_migraphx = false);
 
     /// Encode stereo audio to latent.
     ///

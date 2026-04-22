@@ -18,7 +18,8 @@ public:
     ///     onnx_path: Path to t5_encoder.onnx.
     ///     use_cuda: If true, use CUDA execution provider.
     ///     use_coreml: If true (macOS), use CoreML execution provider.
-    explicit T5Encoder(const std::string& onnx_path, bool use_cuda = false, bool use_coreml = false);
+    ///     use_migraphx: If true (Linux/ROCm), use MIGraphX execution provider.
+    explicit T5Encoder(const std::string& onnx_path, bool use_cuda = false, bool use_coreml = false, bool use_migraphx = false);
 
     /// Run the T5 encoder on pre-tokenized input.
     ///

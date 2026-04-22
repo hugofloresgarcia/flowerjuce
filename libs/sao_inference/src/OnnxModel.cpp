@@ -8,7 +8,7 @@
 
 namespace sao {
 
-OnnxModel::OnnxModel(const std::string& model_path, bool use_cuda, bool use_coreml)
+OnnxModel::OnnxModel(const std::string& model_path, bool use_cuda, bool use_coreml, bool use_migraphx)
     : m_env(ORT_LOGGING_LEVEL_WARNING, "sao_inference")
     , m_memory_info(Ort::MemoryInfo::CreateCpu(OrtArenaAllocator, OrtMemTypeDefault))
 {
@@ -18,6 +18,17 @@ OnnxModel::OnnxModel(const std::string& model_path, bool use_cuda, bool use_core
     if (use_cuda) {
         OrtCUDAProviderOptions cuda_options{};
         m_session_options.AppendExecutionProvider_CUDA(cuda_options);
+    }
+
+    if (use_migraphx) {
+        auto* migraphx_status = OrtSessionOptionsAppendExecutionProvider_MIGraphX(m_session_options, 0);
+        if (migraphx_status != nullptr) {
+            const char* msg = OrtGetApiBase()->GetApi(ORT_API_VERSION)->GetErrorMessage(migraphx_status);
+            std::cerr << "[sao::OnnxModel] MIGraphX EP failed: " << msg << std::endl;
+            OrtGetApiBase()->GetApi(ORT_API_VERSION)->ReleaseStatus(migraphx_status);
+            assert(false && "Failed to append MIGraphX execution provider");
+        }
+        std::cout << "[sao::OnnxModel] MIGraphX EP enabled (device 0)" << std::endl;
     }
 
 #ifdef __APPLE__

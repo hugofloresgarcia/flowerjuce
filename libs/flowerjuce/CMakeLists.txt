@@ -172,6 +172,14 @@ if(IOS)
     target_compile_definitions(flowerjuce PUBLIC LINK_PLATFORM_IOS=1)
 endif()
 
+# On Linux, juce_core uses libcurl but the module metadata doesn't declare it
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux" OR CMAKE_SYSTEM_NAME MATCHES ".*BSD")
+    find_package(PkgConfig REQUIRED)
+    pkg_check_modules(LIBCURL REQUIRED libcurl)
+    target_include_directories(flowerjuce PUBLIC ${LIBCURL_INCLUDE_DIRS})
+    target_link_libraries(flowerjuce PUBLIC ${LIBCURL_LIBRARIES})
+endif()
+
 # Link JUCE modules
 target_link_libraries(flowerjuce PUBLIC
     juce::juce_audio_basics

@@ -86,6 +86,7 @@ public:
         std::string manifest_arg;
         bool use_cuda = false;
         bool use_coreml = false;
+        bool use_migraphx = false;
         bool use_mlx_vae = false;
         bool user_set_backend = false;
 
@@ -101,6 +102,11 @@ public:
             else if (args[i] == "--coreml")
             {
                 use_coreml = true;
+                user_set_backend = true;
+            }
+            else if (args[i] == "--migraphx")
+            {
+                use_migraphx = true;
                 user_set_backend = true;
             }
             else if (args[i] == "--mlx-vae")
@@ -134,6 +140,7 @@ public:
             + " macos=" + juce::String(is_macos_platform() ? "true" : "false")
             + " backends cuda=" + juce::String(use_cuda ? "true" : "false")
             + " coreml=" + juce::String(use_coreml ? "true" : "false")
+            + " migraphx=" + juce::String(use_migraphx ? "true" : "false")
             + " mlx_vae=" + juce::String(use_mlx_vae ? "true" : "false"));
 
         m_processor = std::make_unique<StreamGenProcessor>();
@@ -162,7 +169,7 @@ public:
 
         auto& component = dynamic_cast<StreamGenComponent&>(
             *m_main_window->getContentComponent());
-        component.load_pipeline(manifest_path, use_cuda, use_coreml, use_mlx_vae);
+        component.load_pipeline(manifest_path, use_cuda, use_coreml, use_mlx_vae, use_migraphx);
     }
 
     void shutdown() override

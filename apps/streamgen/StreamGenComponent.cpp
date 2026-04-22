@@ -217,14 +217,15 @@ void StreamGenComponent::load_pipeline(
     const std::string& manifest_path,
     bool use_cuda,
     bool use_coreml,
-    bool use_mlx_vae)
+    bool use_mlx_vae,
+    bool use_migraphx)
 {
     streamgen_log("load_pipeline: removeAudioCallback (safe window for processor.configure / ring rebuild)");
     m_device_manager.removeAudioCallback(&m_processor);
 
     m_worker = std::make_unique<InferenceWorker>(m_processor);
 
-    if (!m_worker->load_pipeline(manifest_path, use_cuda, use_coreml, use_mlx_vae))
+    if (!m_worker->load_pipeline(manifest_path, use_cuda, use_coreml, use_mlx_vae, use_migraphx))
     {
         DBG("StreamGenComponent: FAILED to load pipeline from " + juce::String(manifest_path));
         streamgen_log("load_pipeline: FAILED, re-attaching audio callback");

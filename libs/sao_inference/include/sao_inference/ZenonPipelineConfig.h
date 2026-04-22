@@ -61,6 +61,7 @@ struct ZenonPipelineConfig {
 
     bool use_cuda = false;
     bool use_coreml = false;
+    bool use_migraphx = false;
 
     /// Load configuration from a zenon_pipeline_manifest.json file.
     ///
