@@ -88,6 +88,28 @@ ZenonPipeline::ZenonPipeline(const ZenonPipelineConfig& config)
         std::cout << "[ZenonPipeline] All models loaded in " << m_timing.model_load_ms << " ms" << std::endl;
 }
 
+void ZenonPipeline::warmup_vae()
+{
+    const int C = m_config.latent_dim;
+    const int T = m_config.latent_length;
+    const int N = m_config.sample_size;
+
+    std::vector<float> silence(static_cast<size_t>(2) * static_cast<size_t>(N), 0.0f);
+    std::vector<float> zero_latent(static_cast<size_t>(C) * static_cast<size_t>(T), 0.0f);
+
+    if (m_verbose)
+        std::cout << "[ZenonPipeline] Warming up VAE (encode x2 + decode)..." << std::flush;
+
+    auto t0 = Clock::now();
+    (void)m_vae_encoder->encode(silence, N, C);
+    (void)m_vae_encoder->encode(silence, N, C);
+    (void)m_vae_decoder->decode(zero_latent, T);
+    const double ms = elapsed_ms(t0);
+
+    if (m_verbose)
+        std::cout << " done (" << ms << " ms)" << std::endl;
+}
+
 std::vector<float> ZenonPipeline::generate(
     const std::vector<int64_t>& input_ids,
     const std::vector<int64_t>& attention_mask,

@@ -155,6 +155,13 @@ public:
 
     bool collect_step_diagnostics() const { return m_collect_step_diagnostics; }
 
+    /// Run full-shape VAE work (two encodes + one decode) on silence / zero latent.
+    ///
+    /// Primes GPU, CUDA/cuDNN, CoreML, or MLX so the first real `generate()` pays less cold-start
+    /// latency. Discards outputs; does not update `timing()` / `diagnostics()` from `generate()`.
+    /// When `verbose()` is true, prints wall time for the warmup block.
+    void warmup_vae();
+
 private:
     std::unique_ptr<T5Encoder> m_t5;
     std::unique_ptr<DiTInpaintModel> m_dit;
