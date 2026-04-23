@@ -27,6 +27,9 @@ public:
         int num_samples,
         int latent_dim) override;
 
+    // Uses default `IVaeEncoder::encode_batch` (loop over single `encode()` calls). The MLX graph
+    // path is single-batch today; overriding would give no speed-up.
+
 private:
     std::shared_ptr<MlxVaeBundle> m_bundle;
 };

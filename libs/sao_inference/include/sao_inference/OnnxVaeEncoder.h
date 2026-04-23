@@ -18,6 +18,12 @@ public:
         int num_samples,
         int latent_dim) override;
 
+    std::vector<float> encode_batch(
+        const std::vector<float>& audio,
+        int batch_size,
+        int num_samples,
+        int latent_dim) override;
+
 private:
     VAEEncoder m_encoder;
 };

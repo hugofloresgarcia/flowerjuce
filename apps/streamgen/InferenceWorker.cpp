@@ -56,12 +56,12 @@ bool InferenceWorker::load_pipeline(
     m_processor.configure(constants);
 
     m_pipeline->set_verbose(m_pipeline_verbose);
-    auto t_warm = std::chrono::steady_clock::now();
-    m_pipeline->warmup_vae();
-    const double warm_ms = std::chrono::duration<double, std::milli>(
-        std::chrono::steady_clock::now() - t_warm)
-                               .count();
-    streamgen_log("InferenceWorker::warmup_vae wall_ms=" + juce::String(warm_ms, 1));
+    // auto t_warm = std::chrono::steady_clock::now();
+    // m_pipeline->warmup_vae();
+    // const double warm_ms = std::chrono::duration<double, std::milli>(
+    //     std::chrono::steady_clock::now() - t_warm)
+    //                            .count();
+    // streamgen_log("InferenceWorker::warmup_vae wall_ms=" + juce::String(warm_ms, 1));
 
     m_have_t5_cache = false;
     m_cached_t5_masked.clear();

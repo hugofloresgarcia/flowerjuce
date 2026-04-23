@@ -88,27 +88,6 @@ ZenonPipeline::ZenonPipeline(const ZenonPipelineConfig& config)
         std::cout << "[ZenonPipeline] All models loaded in " << m_timing.model_load_ms << " ms" << std::endl;
 }
 
-void ZenonPipeline::warmup_vae()
-{
-    const int C = m_config.latent_dim;
-    const int T = m_config.latent_length;
-    const int N = m_config.sample_size;
-
-    std::vector<float> silence(static_cast<size_t>(2) * static_cast<size_t>(N), 0.0f);
-    std::vector<float> zero_latent(static_cast<size_t>(C) * static_cast<size_t>(T), 0.0f);
-
-    if (m_verbose)
-        std::cout << "[ZenonPipeline] Warming up VAE (encode x2 + decode)..." << std::flush;
-
-    auto t0 = Clock::now();
-    (void)m_vae_encoder->encode(silence, N, C);
-    (void)m_vae_encoder->encode(silence, N, C);
-    (void)m_vae_decoder->decode(zero_latent, T);
-    const double ms = elapsed_ms(t0);
-
-    if (m_verbose)
-        std::cout << " done (" << ms << " ms)" << std::endl;
-}
 
 std::vector<float> ZenonPipeline::generate(
     const std::vector<int64_t>& input_ids,
@@ -147,25 +126,51 @@ std::vector<float> ZenonPipeline::generate(
     std::vector<float> streamgen_latent;
     std::vector<float> input_latent;
 
-    if (!streamgen_latent_in.empty()) {
-        streamgen_latent = streamgen_latent_in;
-        if (m_verbose)
-            std::cout << "[ZenonPipeline] Using pre-encoded streamgen latent" << std::endl;
-    } else {
-        assert(!streamgen_audio.empty());
-        std::cout << "[ZenonPipeline] VAE-encoding streamgen audio..." << std::flush;
-        streamgen_latent = m_vae_encoder->encode(streamgen_audio, m_config.sample_size, C);
-        std::cout << " done (" << elapsed_ms(t0) << " ms)" << std::endl;
-    }
+    const bool need_encode_streamgen = streamgen_latent_in.empty();
+    const bool need_encode_input = input_latent_in.empty();
 
-    if (!input_latent_in.empty()) {
-        input_latent = input_latent_in;
-    } else {
+    if (need_encode_streamgen && need_encode_input) {
+        // Fast path: one batched VAE encode call with (B=2, 2, N). Concatenating along batch
+        // axis 0 is a raw append since both inputs are already row-major (1, 2, N) of the same
+        // length.
+        assert(!streamgen_audio.empty());
         assert(!input_audio.empty());
-        auto t_enc2 = Clock::now();
-        std::cout << "[ZenonPipeline] VAE-encoding input audio..." << std::flush;
-        input_latent = m_vae_encoder->encode(input_audio, m_config.sample_size, C);
-        std::cout << " done (" << elapsed_ms(t_enc2) << " ms)" << std::endl;
+        assert(streamgen_audio.size() == input_audio.size());
+        std::vector<float> combined_audio;
+        combined_audio.reserve(streamgen_audio.size() + input_audio.size());
+        combined_audio.insert(combined_audio.end(), streamgen_audio.begin(), streamgen_audio.end());
+        combined_audio.insert(combined_audio.end(), input_audio.begin(), input_audio.end());
+
+        std::cout << "[ZenonPipeline] VAE-encoding streamgen+input (batched, B=2)..." << std::flush;
+        auto batched_latent = m_vae_encoder->encode_batch(combined_audio, 2, m_config.sample_size, C);
+        std::cout << " done (" << elapsed_ms(t0) << " ms)" << std::endl;
+
+        assert(static_cast<int>(batched_latent.size()) == 2 * latent_size);
+        streamgen_latent.assign(batched_latent.begin(), batched_latent.begin() + latent_size);
+        input_latent.assign(batched_latent.begin() + latent_size, batched_latent.end());
+    } else {
+        if (need_encode_streamgen) {
+            assert(!streamgen_audio.empty());
+            std::cout << "[ZenonPipeline] VAE-encoding streamgen audio..." << std::flush;
+            streamgen_latent = m_vae_encoder->encode(streamgen_audio, m_config.sample_size, C);
+            std::cout << " done (" << elapsed_ms(t0) << " ms)" << std::endl;
+        } else {
+            streamgen_latent = streamgen_latent_in;
+            if (m_verbose)
+                std::cout << "[ZenonPipeline] Using pre-encoded streamgen latent" << std::endl;
+        }
+
+        if (need_encode_input) {
+            assert(!input_audio.empty());
+            auto t_enc2 = Clock::now();
+            std::cout << "[ZenonPipeline] VAE-encoding input audio..." << std::flush;
+            input_latent = m_vae_encoder->encode(input_audio, m_config.sample_size, C);
+            std::cout << " done (" << elapsed_ms(t_enc2) << " ms)" << std::endl;
+        } else {
+            input_latent = input_latent_in;
+            if (m_verbose)
+                std::cout << "[ZenonPipeline] Using pre-encoded input latent" << std::endl;
+        }
     }
 
     assert(static_cast<int>(streamgen_latent.size()) == latent_size);

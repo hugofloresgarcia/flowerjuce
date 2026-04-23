@@ -231,6 +231,7 @@ if(SAO_BUILD_TESTS)
     endfunction()
 
     add_zenon_parity_test(test_zenon_vae_encoder_parity tests/test_zenon_vae_encoder_parity.cpp)
+    add_zenon_parity_test(test_zenon_vae_encoder_batch_parity tests/test_zenon_vae_encoder_batch_parity.cpp)
     if(SAO_ENABLE_MLX)
         function(add_zenon_mlx_vae_parity_test TEST_NAME TEST_SOURCE)
             add_executable(${TEST_NAME} ${TEST_SOURCE})

@@ -15,4 +15,13 @@ std::vector<float> OnnxVaeEncoder::encode(
     return m_encoder.encode(audio, num_samples, latent_dim);
 }
 
+std::vector<float> OnnxVaeEncoder::encode_batch(
+    const std::vector<float>& audio,
+    int batch_size,
+    int num_samples,
+    int latent_dim)
+{
+    return m_encoder.encode_batch(audio, batch_size, num_samples, latent_dim);
+}
+
 } // namespace sao

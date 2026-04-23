@@ -14,10 +14,27 @@ std::vector<float> VAEEncoder::encode(
     int num_samples,
     int latent_dim)
 {
-    constexpr int CHANNELS = 2;
-    assert(static_cast<int>(audio.size()) == CHANNELS * num_samples);
+    return encode_batch(audio, 1, num_samples, latent_dim);
+}
 
-    std::array<int64_t, 3> shape = {1, CHANNELS, static_cast<int64_t>(num_samples)};
+std::vector<float> VAEEncoder::encode_batch(
+    const std::vector<float>& audio,
+    int batch_size,
+    int num_samples,
+    int latent_dim)
+{
+    constexpr int CHANNELS = 2;
+    const int expected_batch_size = 2;
+    assert(batch_size == expected_batch_size); // batch size must be 2 for the zenon_vae_encoder.onnx model
+    assert(num_samples > 0);
+    assert(latent_dim > 0);
+    assert(static_cast<int64_t>(audio.size()) == static_cast<int64_t>(expected_batch_size) * CHANNELS * num_samples);
+
+    std::array<int64_t, 3> shape = {
+        static_cast<int64_t>(expected_batch_size),
+        CHANNELS,
+        static_cast<int64_t>(num_samples),
+    };
 
     auto tensor = Ort::Value::CreateTensor<float>(
         m_model.memory_info(),
@@ -37,6 +54,7 @@ std::vector<float> VAEEncoder::encode(
     auto out_shape = info.GetShape();
 
     assert(out_shape.size() == 3);
+    assert(out_shape[0] == batch_size);
     assert(out_shape[1] == latent_dim);
 
     size_t total = 1;
