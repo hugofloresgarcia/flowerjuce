@@ -113,7 +113,10 @@ static void print_usage(const char* prog)
               << "  --token-ids-npy FILE     Load token IDs from .npy (overrides --prompt)\n"
               << "  --attention-mask-npy FILE Load attention mask from .npy\n"
               << "  --dump-steps-dir DIR     Dump per-step latents as .npy to this directory\n"
+              << "  --zenon-onnx-names       Use Zenon export filenames (zenon_dit.onnx, zenon_vae_decoder.onnx,\n"
+              << "                           weights: .../number_embedder_zenon) under --models-dir / --weights-dir\n"
               << "  --cuda                   Use CUDA execution provider\n"
+              << "  --migraphx               Use MIGraphX execution provider (Linux / ROCm ORT)\n"
               << "  --coreml                 Use CoreML execution provider (macOS)\n";
 }
 
@@ -134,6 +137,8 @@ int main(int argc, char* argv[])
     std::string dump_steps_dir;
     bool use_cuda = false;
     bool use_coreml = false;
+    bool use_migraphx = false;
+    bool zenon_onnx_names = false;
 
     for (int i = 1; i < argc; ++i) {
         std::string arg = argv[i];
@@ -165,6 +170,10 @@ int main(int argc, char* argv[])
             dump_steps_dir = argv[++i];
         } else if (arg == "--cuda") {
             use_cuda = true;
+        } else if (arg == "--migraphx") {
+            use_migraphx = true;
+        } else if (arg == "--zenon-onnx-names") {
+            zenon_onnx_names = true;
         } else if (arg == "--coreml") {
             use_coreml = true;
         } else if (arg == "--help" || arg == "-h") {
@@ -184,12 +193,19 @@ int main(int argc, char* argv[])
 
     sao::PipelineConfig config;
     config.t5_onnx_path = models_dir + "/t5_encoder.onnx";
-    config.dit_onnx_path = models_dir + "/dit_step.onnx";
-    config.vae_onnx_path = models_dir + "/vae_decoder.onnx";
-    config.number_embedder_weights_dir = weights_dir + "/number_embedder";
+    if (zenon_onnx_names) {
+        config.dit_onnx_path = models_dir + "/zenon_dit.onnx";
+        config.vae_onnx_path = models_dir + "/zenon_vae_decoder.onnx";
+        config.number_embedder_weights_dir = weights_dir + "/number_embedder_zenon";
+    } else {
+        config.dit_onnx_path = models_dir + "/dit_step.onnx";
+        config.vae_onnx_path = models_dir + "/vae_decoder.onnx";
+        config.number_embedder_weights_dir = weights_dir + "/number_embedder";
+    }
     config.vae_scale = 1.0f;
     config.use_cuda = use_cuda;
     config.use_coreml = use_coreml;
+    config.use_migraphx = use_migraphx;
     config.sample_rate = 44100;
     config.latent_length = 256;
 
