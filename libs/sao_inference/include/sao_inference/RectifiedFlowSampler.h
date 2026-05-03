@@ -2,6 +2,7 @@
 
 #include "DiTModel.h"
 #include "ConditioningAssembler.h"
+#include "ZenonPipelineConfig.h"
 #include <vector>
 #include <functional>
 
@@ -14,6 +15,8 @@ struct SamplerConfig {
     float sigma_max = 1.0f;
     int latent_channels = 64;
     int latent_length = 256;
+    /// When enabled, applies the same time_shift as Zenon/InpaintSampler (Python sample_rf dist_shift).
+    DistributionShiftConfig dist_shift{};
 };
 
 /// Callback invoked after each sampling step.
@@ -39,6 +42,11 @@ using StepCallback = std::function<void(int step, float t_curr, const std::vecto
 std::vector<float> build_time_schedule(int steps, float sigma_max);
 
 /// Run the rectified flow Euler sampling loop with CFG.
+///
+/// When config.dist_shift.enabled is true, the base schedule from build_time_schedule is
+/// remapped with apply_distribution_shift (matches ConditionedDiffusionModelWrapper.dist_shift
+/// in Python). Zenon inpainting uses sample_euler_cfg_inpaint instead, which reads shift
+/// from the manifest pipeline config.
 ///
 /// For each step:
 ///   1. Stack x (cond) + x (uncond) into batch=2

@@ -100,6 +100,7 @@ std::vector<float> Pipeline::generate(
     sampler_config.cfg_scale = cfg_scale;
     sampler_config.latent_channels = 64;
     sampler_config.latent_length = m_config.latent_length;
+    sampler_config.dist_shift = m_config.dist_shift;
 
     auto sampled = sample_euler_cfg(*m_dit, noise, conditioning, sampler_config,
         [&](int step, float t, const std::vector<float>& x) {

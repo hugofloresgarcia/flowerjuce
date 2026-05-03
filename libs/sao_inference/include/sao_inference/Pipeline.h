@@ -6,6 +6,7 @@
 #include "NumberEmbedder.h"
 #include "ConditioningAssembler.h"
 #include "RectifiedFlowSampler.h"
+#include "ZenonPipelineConfig.h"
 
 #include <memory>
 #include <string>
@@ -24,6 +25,8 @@ struct PipelineConfig {
     bool use_migraphx = false;
     int sample_rate = 44100;
     int latent_length = 256;
+    /// Rectified-flow time remapping; leave disabled for checkpoints with no Python dist_shift.
+    DistributionShiftConfig dist_shift{};
 };
 
 struct TimingReport {

@@ -1,4 +1,5 @@
 #include "sao_inference/RectifiedFlowSampler.h"
+#include "sao_inference/InpaintSampler.h"
 #include <cassert>
 #include <cmath>
 #include <cstring>
@@ -36,6 +37,9 @@ std::vector<float> sample_euler_cfg(
     assert(static_cast<int>(noise.size()) == latent_size);
 
     auto t_schedule = build_time_schedule(config.steps, config.sigma_max);
+    if (config.dist_shift.enabled) {
+        apply_distribution_shift(t_schedule, config.dist_shift, T);
+    }
 
     std::vector<float> x = noise;
 
