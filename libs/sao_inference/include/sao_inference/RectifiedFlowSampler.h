@@ -24,15 +24,15 @@ struct SamplerConfig {
 ///     x: Current latent state, flat (1, C, T).
 using StepCallback = std::function<void(int step, float t_curr, const std::vector<float>& x)>;
 
-/// Build the time schedule for rectified flow sampling.
+/// Build the base time schedule for rectified flow sampling.
 ///
-/// logsnr = linspace(logsnr_max, 2, steps+1)
-/// t = sigmoid(-logsnr)
-/// t[0] = sigma_max, t[-1] = 0
+/// t = linspace(1, 0, steps + 1), then t[0] = sigma_max and t[steps] = 0.
+/// Zenon applies the shifted exponential remap via apply_distribution_shift()
+/// (DistributionShift.time_shift in Python).
 ///
 /// Args:
 ///     steps: Number of sampling steps.
-///     sigma_max: Maximum sigma (typically 1.0).
+///     sigma_max: Starting timestep clamp (typically 1.0).
 ///
 /// Returns:
 ///     Time schedule of length (steps+1,).

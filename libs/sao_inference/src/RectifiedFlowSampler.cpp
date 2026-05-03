@@ -8,20 +8,14 @@ namespace sao {
 
 std::vector<float> build_time_schedule(int steps, float sigma_max)
 {
-    float logsnr_max;
-    if (sigma_max < 1.0f) {
-        logsnr_max = std::log(((1.0f - sigma_max) / sigma_max) + 1e-6f);
-    } else {
-        logsnr_max = -6.0f;
-    }
-
-    std::vector<float> t(steps + 1);
+    // Uniform base schedule linspace(1, 0, steps + 1), matching Zenon ONNX debug
+    // (scripts/nithya_debug/debug_gen_w_onnx.ipynb) before distribution shift.
+    std::vector<float> t(static_cast<size_t>(steps + 1));
     for (int i = 0; i <= steps; ++i) {
-        float logsnr = logsnr_max + (2.0f - logsnr_max) * static_cast<float>(i) / static_cast<float>(steps);
-        t[i] = 1.0f / (1.0f + std::exp(logsnr)); // sigmoid(-logsnr)
+        t[static_cast<size_t>(i)] = 1.0f - static_cast<float>(i) / static_cast<float>(steps);
     }
     t[0] = sigma_max;
-    t[steps] = 0.0f;
+    t[static_cast<size_t>(steps)] = 0.0f;
 
     return t;
 }
