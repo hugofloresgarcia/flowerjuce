@@ -227,6 +227,7 @@ void GenerationScheduler::enqueue_job(int64_t keep_end_sample)
     job.window_end_sample = job.window_start_sample + m_constants.sample_size;
     job.output_delay_samples = output_delay_smpl;
     job.keep_ratio = kr;
+    job.future_visibility_frames = future_visibility_frames.load(std::memory_order_relaxed);
     job.steps = steps.load(std::memory_order_relaxed);
     job.cfg_scale = cfg_scale.load(std::memory_order_relaxed);
     job.seconds_total = static_cast<float>(m_constants.window_seconds());

@@ -58,6 +58,10 @@ public:
     /// Visible duration in seconds (how much time the waveform shows).
     void set_visible_duration(float seconds) { m_visible_seconds = seconds; }
 
+    /// Latent downsampling ratio from the model manifest (default 2048).
+    /// Used to render the tf_inpaint_mask boundary tick (sax visibility) per job.
+    void set_downsampling_ratio(int ratio) { m_downsampling_ratio = ratio; }
+
     /// Ruler labels: wall-clock (MM:SS) vs bars/beats from session start.
     void set_time_axis_for_paint(bool musical, float bpm, int beats_per_bar, int time_sig_denominator);
 
@@ -71,6 +75,7 @@ private:
     std::vector<float> m_max_px;
     int64_t m_absolute_pos = 0;
     int m_sample_rate = 44100;
+    int m_downsampling_ratio = 2048;
     float m_visible_seconds = 30.0f;
     juce::String m_label;
     juce::String m_source_tag;

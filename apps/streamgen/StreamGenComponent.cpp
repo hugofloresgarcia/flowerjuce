@@ -85,6 +85,11 @@ StreamGenComponent::StreamGenComponent(
         }
     };
 
+    m_controls.on_future_visibility_changed = [this](int frames)
+    {
+        m_processor.scheduler().future_visibility_frames.store(frames, std::memory_order_relaxed);
+    };
+
     m_controls.on_steps_changed = [this](int val)
     {
         m_processor.scheduler().steps.store(val, std::memory_order_relaxed);
@@ -361,6 +366,9 @@ void StreamGenComponent::timerCallback()
 
     m_streamgen_audio_waveform.set_visible_duration(visible_seconds);
     m_drums_waveform.set_visible_duration(visible_seconds);
+    const int downsampling_ratio = m_processor.constants().downsampling_ratio;
+    m_streamgen_audio_waveform.set_downsampling_ratio(downsampling_ratio);
+    m_drums_waveform.set_downsampling_ratio(downsampling_ratio);
 
     auto& sched = sched_for_timer;
     const bool musical = sched.musical_time_enabled.load(std::memory_order_relaxed);

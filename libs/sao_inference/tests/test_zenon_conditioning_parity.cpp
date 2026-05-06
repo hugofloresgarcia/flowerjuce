@@ -103,11 +103,116 @@ int main()
     constexpr float THRESHOLD = 1e-4f;
     bool pass = cross_err < THRESHOLD && global_err < THRESHOLD && input_add_err < THRESHOLD;
 
-    if (pass) {
-        std::cout << "PASS (threshold=" << THRESHOLD << ")" << std::endl;
-        return 0;
-    } else {
-        std::cerr << "FAIL" << std::endl;
+    if (!pass) {
+        std::cerr << "FAIL on default (V=0) parity check" << std::endl;
         return 1;
     }
+    std::cout << "PASS default V=0 (threshold=" << THRESHOLD << ")" << std::endl;
+
+    // ---- Second sub-test: tf_inpaint_mask override for V = -3 ----
+    // We can't compare against a Python reference here (Nithya's inference path
+    // never sets tf_inpaint_mask differently from inpaint_mask), so we hand-
+    // compute the expected gating: for the streamgen_latent channels of
+    // input_add_concat, frames in [tf_keep_frames, T) must be zero; everything
+    // else must equal the V=0 result. The other channels are gated by the same
+    // tf gate (mask_rule=pass_through for inpaint_mask / inpaint_masked_input /
+    // tf_inpaint_mask), so they're identical to the V=0 case.
+    std::cout << "\n=== V<0 sub-test (tf_inpaint_mask override) ===" << std::endl;
+
+    // Find the keep prefix length used in the existing reference data so we
+    // know what tf_keep_frames falls out of K + V.
+    int keep_frames = 0;
+    for (int i = 0; i < latent_length; ++i) {
+        if (inpaint_mask[i] >= 0.5f) ++keep_frames;
+    }
+    constexpr int V = -3;
+    int tf_keep_frames = keep_frames + V;
+    if (tf_keep_frames < 0) tf_keep_frames = 0;
+    if (tf_keep_frames > latent_length) tf_keep_frames = latent_length;
+    std::cout << "  keep_frames=" << keep_frames
+              << "  V=" << V
+              << "  tf_keep_frames=" << tf_keep_frames << std::endl;
+
+    std::vector<float> tf_mask(latent_length, 0.0f);
+    for (int i = 0; i < tf_keep_frames; ++i) tf_mask[i] = 1.0f;
+
+    auto cond_v = sao::assemble_inpaint_conditioning(
+        t5_embed, t5_seq_len,
+        seconds_embed, embed_dim,
+        streamgen_latent, inpaint_mask, inpaint_masked_input,
+        config.input_add_keys, config.gate_input_add_key,
+        latent_channels, latent_length,
+        &tf_mask
+    );
+
+    // Locate streamgen_latent and tf_inpaint_mask blocks inside the concat tensor.
+    int sl_offset = -1;
+    int sl_channels = 0;
+    int tf_offset = -1;
+    int tf_channels = 0;
+    {
+        int offset = 0;
+        for (const auto& desc : config.input_add_keys) {
+            if (desc.name == "streamgen_latent") {
+                sl_offset = offset;
+                sl_channels = desc.channels;
+            } else if (desc.name == "tf_inpaint_mask") {
+                tf_offset = offset;
+                tf_channels = desc.channels;
+            }
+            offset += desc.channels;
+        }
+    }
+    if (sl_offset < 0) {
+        std::cerr << "FAIL: streamgen_latent not found in manifest input_add_keys" << std::endl;
+        return 3;
+    }
+
+    // Verify three things:
+    //   (a) streamgen_latent block: zeros at t >= tf_keep_frames; equals V=0 result for t < tf_keep_frames.
+    //   (b) tf_inpaint_mask block (if present): exactly matches the supplied tf_mask.
+    //   (c) every other channel block (inpaint_mask, inpaint_masked_input, ...): identical to V=0.
+    float zero_violation = 0.0f;
+    float sl_nonzero_diff = 0.0f;
+    float tf_diff = 0.0f;
+    float other_diff = 0.0f;
+    const int total_ch = config.input_add_total_channels;
+    for (int c = 0; c < total_ch; ++c) {
+        const bool is_sl = (c >= sl_offset && c < sl_offset + sl_channels);
+        const bool is_tf = (tf_offset >= 0 && c >= tf_offset && c < tf_offset + tf_channels);
+        for (int t = 0; t < latent_length; ++t) {
+            const size_t idx = static_cast<size_t>(c) * latent_length + t;
+            const float v0 = cond.input_add_concat[idx];
+            const float vV = cond_v.input_add_concat[idx];
+            if (is_sl) {
+                if (t >= tf_keep_frames) {
+                    if (std::abs(vV) > zero_violation) zero_violation = std::abs(vV);
+                } else {
+                    const float d = std::abs(vV - v0);
+                    if (d > sl_nonzero_diff) sl_nonzero_diff = d;
+                }
+            } else if (is_tf) {
+                const float d = std::abs(vV - tf_mask[t]);
+                if (d > tf_diff) tf_diff = d;
+            } else {
+                const float d = std::abs(vV - v0);
+                if (d > other_diff) other_diff = d;
+            }
+        }
+    }
+    std::cout << "  streamgen_latent zero region max abs:    " << zero_violation << std::endl;
+    std::cout << "  streamgen_latent kept region max delta:  " << sl_nonzero_diff << std::endl;
+    std::cout << "  tf_inpaint_mask channel max delta vs supplied: " << tf_diff << std::endl;
+    std::cout << "  other channels max delta vs V=0:         " << other_diff << std::endl;
+
+    bool pass_v = zero_violation < 1e-6f
+                  && sl_nonzero_diff < 1e-6f
+                  && tf_diff < 1e-6f
+                  && other_diff < 1e-6f;
+    if (!pass_v) {
+        std::cerr << "FAIL on V=" << V << " sub-test" << std::endl;
+        return 4;
+    }
+    std::cout << "PASS V=" << V << " sub-test" << std::endl;
+    return 0;
 }

@@ -166,7 +166,8 @@ void InferenceWorker::process_job(const GenerationJob& job)
     DBG("InferenceWorker: processing job #" + juce::String(job.job_id)
         + " window=[" + juce::String(job.window_start_sample)
         + ", " + juce::String(job.window_end_sample) + "]"
-        + " keep_ratio=" + juce::String(job.keep_ratio, 3));
+        + " keep_ratio=" + juce::String(job.keep_ratio, 3)
+        + " fv_frames=" + juce::String(job.future_visibility_frames));
 
     streamgen_log("InferenceWorker::process_job START id=" + juce::String(job.job_id)
         + " win=[" + juce::String(job.window_start_sample) + "," + juce::String(job.window_end_sample)
@@ -226,6 +227,7 @@ void InferenceWorker::process_job(const GenerationJob& job)
         streamgen_audio, // Python / Zenon streamgen_audio
         input_audio,     // Python / Zenon input_audio (drum inpaint stem)
         job.keep_ratio,
+        job.future_visibility_frames,
         static_cast<uint32_t>(job.job_id), // use job_id as seed for variety
         job.steps,
         job.cfg_scale,

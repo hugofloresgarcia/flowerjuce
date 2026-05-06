@@ -23,6 +23,8 @@ public:
     std::function<void(float)> on_schedule_delay_changed;
     std::function<void(float)> on_schedule_delay_bars_changed;
     std::function<void(float)> on_keep_ratio_changed;
+    /// Fires `tf_inpaint_mask` offset in latent frames (signed; UI clamps to [-N, 0]).
+    std::function<void(int)> on_future_visibility_changed;
     std::function<void(int)> on_steps_changed;
     std::function<void(float)> on_cfg_changed;
     std::function<void(bool)> on_musical_time_changed;
@@ -100,6 +102,9 @@ private:
     juce::GroupComponent m_group_inference{"Inference"};
     juce::Label m_keep_ratio_label;
     juce::Slider m_keep_ratio_slider;
+
+    juce::Label m_future_visibility_label;
+    juce::Slider m_future_visibility_slider;
 
     juce::Label m_steps_label;
     juce::Slider m_steps_slider;

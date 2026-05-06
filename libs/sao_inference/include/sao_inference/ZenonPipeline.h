@@ -68,15 +68,20 @@ struct ZenonTimingReport {
 /// Uses ONNX Runtime for NN forward passes and manual C++ for control flow.
 ///
 /// Pipeline flow:
-///   1. VAE encode streamgen_audio -> streamgen_latent
-///   2. VAE encode input_audio -> input_latent
-///   3. Build inpaint_mask (prefix mask based on keep_ratio)
-///   4. Build inpaint_masked_input = input_latent * mask
-///   5. T5 encode text prompt
-///   6. NumberEmbedder encode seconds_total
-///   7. Assemble conditioning (cross_attn + global + input_add with mask gating)
-///   8. Rectified flow Euler sampling with CFG + distribution shift
-///   9. VAE decode -> output audio
+///   1. (V<0 only) Re-align streamgen_audio: drop first |V|*downsampling_ratio samples, append
+///      same number of zeros to the end. Keeps total length == sample_size and aligns sax content
+///      with the shorter tf_inpaint_mask window.
+///   2. VAE encode streamgen_audio -> streamgen_latent
+///   3. VAE encode input_audio -> input_latent
+///   4. Build inpaint_mask (prefix mask based on keep_ratio) and tf_inpaint_mask
+///      (separate prefix mask based on keep_ratio + future_visibility_frames)
+///   5. Build inpaint_masked_input = input_latent * inpaint_mask
+///   6. T5 encode text prompt
+///   7. NumberEmbedder encode seconds_total
+///   8. Assemble conditioning (cross_attn + global + input_add with mask gating;
+///      tf_inpaint_mask gates streamgen_latent)
+///   9. Rectified flow Euler sampling with CFG + distribution shift
+///   10. VAE decode -> output audio
 class ZenonPipeline {
 public:
     /// Initialize the pipeline by loading the manifest and all models/weights.
@@ -101,6 +106,15 @@ public:
     ///     streamgen_audio: Raw streamgen audio, flat (1, 2, N). Used if streamgen_latent is empty.
     ///     input_audio: Raw input audio, flat (1, 2, N). Used if input_latent is empty.
     ///     keep_ratio: Fraction of latent frames to keep (0.0 to 1.0).
+    ///     future_visibility_frames: Signed offset (in latent frames) applied to
+    ///         tf_inpaint_mask only. tf_keep_frames = clamp(0, T, round(T*keep_ratio) + V).
+    ///         When V == 0 (default), tf_inpaint_mask == inpaint_mask, matching
+    ///         Nithya's reference inference (sat-zenon diffusion.py:202-207 fallback).
+    ///         When V < 0, the streamgen_audio is silently re-aligned: the front |V|*downsampling_ratio
+    ///         samples are dropped and the same number of zero samples are appended at the end so the
+    ///         saxophone content remains time-aligned with the (shorter) sax visibility window.
+    ///         Positive V is supported by the model architecture but this checkpoint was trained on
+    ///         future_visibility in [-4, 0] (see base-fused-inp-add.json), so positive values are OOD.
     ///     seed: Random seed for noise generation.
     ///     steps: Number of sampling steps.
     ///     cfg_scale: Classifier-free guidance scale.
@@ -125,6 +139,7 @@ public:
         const std::vector<float>& streamgen_audio,
         const std::vector<float>& input_audio,
         float keep_ratio,
+        int future_visibility_frames,
         uint32_t seed,
         int steps = 50,
         float cfg_scale = 7.0f,

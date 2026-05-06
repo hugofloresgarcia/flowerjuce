@@ -98,6 +98,7 @@ std::vector<float> ZenonPipeline::generate(
     const std::vector<float>& streamgen_audio,
     const std::vector<float>& input_audio,
     float keep_ratio,
+    int future_visibility_frames,
     uint32_t seed,
     int steps,
     float cfg_scale,
@@ -120,7 +121,42 @@ std::vector<float> ZenonPipeline::generate(
 
     auto total_start = Clock::now();
 
-    // ---- Step 1-2: VAE encode (or use pre-encoded latents) ----
+    // ---- Step 1: (V<0) Re-align streamgen audio so it stays time-locked to drums ----
+    // For negative future_visibility, the model sees fewer sax frames than drum frames.
+    // To keep the saxophone content temporally lined up with the drum prefix, we shift
+    // the user's sax audio earlier: drop the first |V|*downsampling_ratio samples per
+    // channel and append the same number of zeros at the end. The trailing zeros sit
+    // inside the masked-out region of tf_inpaint_mask anyway. This mirrors the right-pad
+    // training behaviour for short prefixes.
+    const std::vector<float>* streamgen_audio_for_encode = &streamgen_audio;
+    std::vector<float> streamgen_audio_realigned;
+    if (future_visibility_frames < 0 && !streamgen_audio.empty()) {
+        constexpr int CHANNELS = 2;
+        const int N = m_config.sample_size;
+        const int pad_samples = (-future_visibility_frames) * m_config.downsampling_ratio;
+        if (pad_samples >= N) {
+            // Asking to shift everything off the front -> all silence.
+            streamgen_audio_realigned.assign(static_cast<size_t>(CHANNELS) * N, 0.0f);
+        } else {
+            assert(static_cast<int>(streamgen_audio.size()) == CHANNELS * N);
+            streamgen_audio_realigned.resize(static_cast<size_t>(CHANNELS) * N, 0.0f);
+            for (int c = 0; c < CHANNELS; ++c) {
+                // Take samples [pad_samples, N) of channel c and write them to [0, N - pad_samples).
+                const float* src = streamgen_audio.data() + static_cast<size_t>(c) * N + pad_samples;
+                float* dst = streamgen_audio_realigned.data() + static_cast<size_t>(c) * N;
+                std::copy(src, src + (N - pad_samples), dst);
+                // Trailing [N - pad_samples, N) is left at the zero-init from resize().
+            }
+        }
+        streamgen_audio_for_encode = &streamgen_audio_realigned;
+        if (m_verbose) {
+            std::cout << "[ZenonPipeline] Re-aligned streamgen audio for V="
+                      << future_visibility_frames << " (dropped " << pad_samples
+                      << " front samples, padded same at end)" << std::endl;
+        }
+    }
+
+    // ---- Step 2-3: VAE encode (or use pre-encoded latents) ----
     auto t0 = Clock::now();
 
     std::vector<float> streamgen_latent;
@@ -133,12 +169,13 @@ std::vector<float> ZenonPipeline::generate(
         // Fast path: one batched VAE encode call with (B=2, 2, N). Concatenating along batch
         // axis 0 is a raw append since both inputs are already row-major (1, 2, N) of the same
         // length.
-        assert(!streamgen_audio.empty());
+        assert(!streamgen_audio_for_encode->empty());
         assert(!input_audio.empty());
-        assert(streamgen_audio.size() == input_audio.size());
+        assert(streamgen_audio_for_encode->size() == input_audio.size());
         std::vector<float> combined_audio;
-        combined_audio.reserve(streamgen_audio.size() + input_audio.size());
-        combined_audio.insert(combined_audio.end(), streamgen_audio.begin(), streamgen_audio.end());
+        combined_audio.reserve(streamgen_audio_for_encode->size() + input_audio.size());
+        combined_audio.insert(combined_audio.end(),
+                              streamgen_audio_for_encode->begin(), streamgen_audio_for_encode->end());
         combined_audio.insert(combined_audio.end(), input_audio.begin(), input_audio.end());
 
         std::cout << "[ZenonPipeline] VAE-encoding streamgen+input (batched, B=2)..." << std::flush;
@@ -150,9 +187,9 @@ std::vector<float> ZenonPipeline::generate(
         input_latent.assign(batched_latent.begin() + latent_size, batched_latent.end());
     } else {
         if (need_encode_streamgen) {
-            assert(!streamgen_audio.empty());
+            assert(!streamgen_audio_for_encode->empty());
             std::cout << "[ZenonPipeline] VAE-encoding streamgen audio..." << std::flush;
-            streamgen_latent = m_vae_encoder->encode(streamgen_audio, m_config.sample_size, C);
+            streamgen_latent = m_vae_encoder->encode(*streamgen_audio_for_encode, m_config.sample_size, C);
             std::cout << " done (" << elapsed_ms(t0) << " ms)" << std::endl;
         } else {
             streamgen_latent = streamgen_latent_in;
@@ -181,14 +218,25 @@ std::vector<float> ZenonPipeline::generate(
 
     m_timing.vae_encode_ms = elapsed_ms(t0);
 
-    // ---- Step 3: Build inpaint mask ----
+    // ---- Step 4a: Build inpaint mask + tf_inpaint_mask ----
+    // inpaint_mask gates the drum prefix; tf_inpaint_mask gates only the saxophone
+    // (streamgen_latent) inside the assembler. They differ when future_visibility_frames != 0.
+    // tf_keep_frames = clamp(0, T, keep_frames + V) mirrors sat-zenon inpainting.py:103-115.
     int keep_frames = static_cast<int>(T * keep_ratio);
     std::vector<float> inpaint_mask(T, 0.0f);
     for (int i = 0; i < keep_frames; ++i) {
         inpaint_mask[i] = 1.0f;
     }
 
-    // ---- Step 4: Build inpaint_masked_input ----
+    int tf_keep_frames = keep_frames + future_visibility_frames;
+    if (tf_keep_frames < 0) tf_keep_frames = 0;
+    if (tf_keep_frames > T) tf_keep_frames = T;
+    std::vector<float> tf_inpaint_mask(T, 0.0f);
+    for (int i = 0; i < tf_keep_frames; ++i) {
+        tf_inpaint_mask[i] = 1.0f;
+    }
+
+    // ---- Step 4b: Build inpaint_masked_input ----
     std::vector<float> inpaint_masked_input(latent_size);
     for (int c = 0; c < C; ++c) {
         for (int t_idx = 0; t_idx < T; ++t_idx) {
@@ -226,7 +274,8 @@ std::vector<float> ZenonPipeline::generate(
         *t5_masked_ptr, T5_SEQ_LEN,
         seconds_embed, cond_dim,
         streamgen_latent, inpaint_mask, inpaint_masked_input,
-        m_config.input_add_keys, m_config.gate_input_add_key, C, T
+        m_config.input_add_keys, m_config.gate_input_add_key, C, T,
+        &tf_inpaint_mask
     );
     m_timing.conditioning_ms = elapsed_ms(t0);
 

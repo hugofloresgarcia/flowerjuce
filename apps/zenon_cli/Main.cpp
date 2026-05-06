@@ -290,7 +290,7 @@ int main(int argc, char* argv[])
         duration,
         streamgen_latent, input_latent,
         streamgen_audio, input_audio,
-        keep_ratio, seed, steps, cfg_scale,
+        keep_ratio, /*future_visibility_frames=*/0, seed, steps, cfg_scale,
         [](int step, float t, const std::vector<float>& x) {
             float max_val = 0.0f;
             for (float v : x) {

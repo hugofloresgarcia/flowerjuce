@@ -32,14 +32,22 @@ struct InpaintConditioning : Conditioning {
 ///
 /// `gate_input_add_key` selects which input_add entry's data acts as the
 /// gate. The new fused-input-add Zenon model uses "tf_inpaint_mask"; the
-/// older model used "inpaint_mask". At inference, the saxophone latent is
-/// strictly causal so `tf_inpaint_mask` is always equal to `inpaint_mask` —
-/// the assembler builds it internally as a copy when the manifest declares
-/// it.
+/// older model used "inpaint_mask".
+///
+/// `tf_inpaint_mask_override`:
+///   - nullptr (default): replicate Nithya's reference inference
+///     (sat-zenon/stable_audio_tools/models/diffusion.py:202-207). When the
+///     manifest declares "tf_inpaint_mask" but no explicit value is supplied
+///     we fall back to using `inpaint_mask` for the tf channel.
+///   - non-null: use the supplied per-frame binary mask as `tf_inpaint_mask`.
+///     Caller is responsible for shape (length == latent_length) and value
+///     range ({0, 1}). This is how the StreamGen "Future visibility" knob
+///     plumbs a shifted mask down to the model. The training-time semantics
+///     are documented in sat-zenon/stable_audio_tools/models/inpainting.py
+///     lines 103-115.
 ///
 /// Mirrors ConditionedDiffusionModelWrapper.get_conditioning_inputs() from
-/// sat-zenon/stable_audio_tools/models/diffusion.py (lines 196-217), with
-/// the inference simplification that tf_inpaint_mask == inpaint_mask.
+/// sat-zenon/stable_audio_tools/models/diffusion.py (lines 196-217).
 ///
 /// Args:
 ///     t5_embeddings: T5 encoder output, flat (1, t5_seq_len, embed_dim).
@@ -54,6 +62,8 @@ struct InpaintConditioning : Conditioning {
 ///         on new models, "inpaint_mask" on legacy). Must appear in `key_descriptors`.
 ///     latent_channels: C (from manifest).
 ///     latent_length: T (from manifest).
+///     tf_inpaint_mask_override: Optional explicit tf_inpaint_mask; see class doc above.
+///         Null = fall back to a copy of `inpaint_mask` (Nithya's reference behaviour).
 ///
 /// Returns:
 ///     Assembled InpaintConditioning with mask gating + channel concatenation.
@@ -68,7 +78,8 @@ InpaintConditioning assemble_inpaint_conditioning(
     const std::vector<InputAddKeyDescriptor>& key_descriptors,
     const std::string& gate_input_add_key,
     int latent_channels,
-    int latent_length
+    int latent_length,
+    const std::vector<float>* tf_inpaint_mask_override = nullptr
 );
 
 } // namespace sao

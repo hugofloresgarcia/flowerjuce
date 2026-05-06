@@ -69,6 +69,10 @@ public:
     /// `configure()` via `sync_hop_seconds_to_keep_ratio()` (≈ half the ~11.9s window for keep 0.5).
     std::atomic<float> hop_seconds{3.0f};
     std::atomic<float> keep_ratio{0.5f};
+    /// Signed offset (in latent frames) for tf_inpaint_mask. 0 = match keep_ratio
+    /// (Nithya's reference behaviour). Negative shrinks sax visibility; positive lookahead
+    /// is OOD for the current checkpoint and is clamped at 0 by the UI.
+    std::atomic<int> future_visibility_frames{0};
     std::atomic<int> steps{8};
     std::atomic<float> cfg_scale{7.0f};
     /// Seconds after keep_end where generated drums land in the timeline (0 = immediate).

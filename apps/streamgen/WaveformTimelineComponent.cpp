@@ -123,6 +123,50 @@ void draw_keep_boundary_ticks(
         g.drawLine(x_ke, y, x_ke, y + 4.0f, 1.0f);
 }
 
+/// tf_inpaint_mask boundary tick: draws a denser dashed line where the saxophone visibility
+/// window ends. Style is intentionally different from `draw_keep_boundary_ticks` so the user
+/// can tell the two boundaries apart at a glance.
+void draw_tf_keep_boundary_ticks(
+    juce::Graphics& g,
+    float x_tf,
+    float waveform_top,
+    float waveform_height,
+    juce::Colour accent)
+{
+    g.setColour(accent.withAlpha(0.85f));
+    // Tighter dash + thicker line than the inpaint boundary to make it visually distinct.
+    for (float y = waveform_top; y < waveform_top + waveform_height; y += 5.0f)
+        g.drawLine(x_tf, y, x_tf, y + 2.5f, 1.5f);
+}
+
+/// Hatched overlay between tf_keep_end and keep_end on the streamgen lane: this is the
+/// region where the right-padded silence has been inserted into the saxophone audio
+/// (the model never sees it because tf_inpaint_mask is 0 there).
+void draw_silence_pad_overlay(
+    juce::Graphics& g,
+    float x_lo,
+    float x_hi,
+    float wf_top,
+    float wf_h,
+    juce::Colour accent)
+{
+    if (x_hi <= x_lo)
+        return;
+
+    g.saveState();
+    g.reduceClipRegion(juce::Rectangle<float>(x_lo, wf_top, x_hi - x_lo, wf_h).toNearestInt());
+    g.setColour(accent.withAlpha(0.18f));
+    g.fillRect(x_lo, wf_top, x_hi - x_lo, wf_h);
+
+    // 45-degree hatch lines for the "silence" feel.
+    g.setColour(accent.withAlpha(0.55f));
+    const float spacing = 6.0f;
+    const float band_h = wf_h;
+    for (float dx = -band_h; dx < (x_hi - x_lo) + band_h; dx += spacing)
+        g.drawLine(x_lo + dx, wf_top, x_lo + dx + band_h, wf_top + band_h, 1.0f);
+    g.restoreState();
+}
+
 /// Where new drums audio lands: output_start_sample() (keep_end + schedule delay). Wall clock when write finished.
 void draw_generation_land_marker(
     juce::Graphics& g,
@@ -404,6 +448,13 @@ void WaveformTimelineComponent::paint(juce::Graphics& g)
             const float drums_gen_hi = std::max(x_land_start, x_land_end);
             const float x_boundary_ke = x_ke;
 
+            // tf_inpaint_mask boundary (sax visibility cut). Equals keep_end when V == 0.
+            const int64_t tf_ke = rec.job.tf_keep_end_sample(m_downsampling_ratio);
+            const float x_tf = sample_to_x(tf_ke, m_absolute_pos, m_sample_rate, m_visible_seconds, static_cast<float>(w));
+            const bool fv_active = rec.job.future_visibility_frames != 0 && tf_ke != ke;
+            // Distinct accent colour for the tf tick — pick a warm hue that doesn't collide with `fill`/`edge`.
+            const juce::Colour tf_accent = juce::Colour::fromRGB(0xFF, 0xB0, 0x40);
+
             const float keep_y = wf_top + band + k_job_band_gap_px;
 
             if (m_timeline_role == TimelineWaveRole::StreamgenAudio)
@@ -415,6 +466,21 @@ void WaveformTimelineComponent::paint(juce::Graphics& g)
                     draw_region_tag(g, input_lo + 4.0f, wf_top + 2.0f, "[input]", terminal.withAlpha(0.95f), tag_backdrop);
                 }
                 draw_keep_boundary_ticks(g, x_boundary_ke, wf_top, wf_h, edge);
+                if (fv_active)
+                {
+                    // Hatched silence-pad region between tf_ke and ke when V<0 — the model
+                    // sees zeros here. (When V>0 we don't draw a pad because positive lookahead
+                    // is currently disabled in the UI.)
+                    if (rec.job.future_visibility_frames < 0)
+                    {
+                        const float pad_lo = std::min(x_tf, x_boundary_ke);
+                        const float pad_hi = std::max(x_tf, x_boundary_ke);
+                        draw_silence_pad_overlay(g, pad_lo, pad_hi, wf_top, band, tf_accent);
+                        draw_region_tag(g, pad_lo + 4.0f, wf_top + band - 14.0f,
+                                        "[sax silence]", terminal.withAlpha(0.95f), tag_backdrop);
+                    }
+                    draw_tf_keep_boundary_ticks(g, x_tf, wf_top, wf_h, tf_accent);
+                }
             }
             else
             {
@@ -435,6 +501,8 @@ void WaveformTimelineComponent::paint(juce::Graphics& g)
                     draw_region_tag(g, drums_gen_lo + 4.0f, gen_y + 2.0f, "[generated]", terminal.withAlpha(0.95f), tag_backdrop);
                 }
                 draw_keep_boundary_ticks(g, x_boundary_ke, wf_top, wf_h, edge);
+                if (fv_active)
+                    draw_tf_keep_boundary_ticks(g, x_tf, wf_top, wf_h, tf_accent);
             }
 
             juce::String lbl = "#" + juce::String(rec.job_id);

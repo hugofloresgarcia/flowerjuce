@@ -26,8 +26,12 @@ struct ModelConstants {
 /// The audio callback uses these to know where to place output.
 ///
 /// Timeline layout for one job:
-///   [window_start ... keep_end ... window_end]
-///   |--- kept prefix ---|--- generated suffix (model) ---|
+///   [window_start ... tf_keep_end ... keep_end ... window_end]
+///   |--- sax visible ---|
+///   |---------- drum kept prefix ----------|--- generated suffix (model) ---|
+/// When future_visibility_frames == 0, tf_keep_end == keep_end (Nithya's reference behaviour).
+/// When future_visibility_frames < 0, tf_keep_end < keep_end and the gap is silence-padded
+/// streamgen audio (right-pad in the encode buffer).
 ///
 /// Decoded generation is written from output_start_sample() for playback; by default that is
 /// keep_end_sample. output_delay_samples shifts landing later (schedule delay).
@@ -47,6 +51,11 @@ struct GenerationJob {
     float cfg_scale = 7.0f;
     float seconds_total = 11.888616f;
 
+    /// Signed offset (in latent frames) for tf_inpaint_mask vs inpaint_mask.
+    /// 0 = no offset (tf == inpaint). Negative = sax visibility ends earlier than drum prefix.
+    /// Positive lookahead is OOD for the current checkpoint and is clamped at 0 by the UI.
+    int future_visibility_frames = 0;
+
     /// Absolute sample where decoded generation begins on the timeline.
     int64_t output_start_sample() const { return keep_end_sample + output_delay_samples; }
 
@@ -55,6 +64,20 @@ struct GenerationJob {
 
     /// Total window length in samples.
     int64_t window_length_samples() const { return window_end_sample - window_start_sample; }
+
+    /// Absolute sample where the saxophone visibility window ends (tf_inpaint_mask boundary).
+    /// `downsampling_ratio` should match the model config (typically 2048).
+    int64_t tf_keep_end_sample(int downsampling_ratio) const
+    {
+        const int64_t shift = static_cast<int64_t>(future_visibility_frames)
+                              * static_cast<int64_t>(downsampling_ratio);
+        const int64_t lo = window_start_sample;
+        const int64_t hi = window_end_sample;
+        int64_t s = keep_end_sample + shift;
+        if (s < lo) s = lo;
+        if (s > hi) s = hi;
+        return s;
+    }
 };
 
 /// Snapshot of timing results from the most recent generation, in milliseconds.

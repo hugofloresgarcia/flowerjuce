@@ -40,8 +40,17 @@ InpaintConditioning assemble_inpaint_conditioning(
     const std::vector<InputAddKeyDescriptor>& key_descriptors,
     const std::string& gate_input_add_key,
     int latent_channels,
-    int latent_length)
+    int latent_length,
+    const std::vector<float>* tf_inpaint_mask_override)
 {
+    if (tf_inpaint_mask_override != nullptr
+        && static_cast<int>(tf_inpaint_mask_override->size()) != latent_length) {
+        throw std::runtime_error(
+            "[InpaintConditioningAssembler] tf_inpaint_mask_override has length "
+            + std::to_string(tf_inpaint_mask_override->size())
+            + " but expected " + std::to_string(latent_length));
+    }
+
     InpaintConditioning cond;
 
     // ---- Cross-attention: T5 tokens followed by the seconds_total embed ----
@@ -57,12 +66,11 @@ InpaintConditioning assemble_inpaint_conditioning(
 
     // ---- Per-key input_add tensors ----
     // Build them in manifest-declared order (which is also the channel order
-    // of the final concatenated tensor). For "tf_inpaint_mask" we materialize
-    // a copy of inpaint_mask — at inference time the saxophone latent is
-    // strictly causal so the only meaningful tf gate is the inpaint mask
-    // itself. See user clarification in chat: "the model has the drum prefix
-    // [0, P) already generated, plus the saxophone latent prefix [0, P)
-    // available -- anything after P is 'the future'".
+    // of the final concatenated tensor). For "tf_inpaint_mask" we use the
+    // caller-supplied override when provided (StreamGen "Future visibility"
+    // knob path); otherwise we fall back to a copy of inpaint_mask, matching
+    // sat-zenon/stable_audio_tools/models/diffusion.py:202-207 ("tf_inpaint_mask
+    // not found in input_add_cond, using inpaint_mask instead").
     cond.input_add.reserve(key_descriptors.size());
     for (const auto& desc : key_descriptors) {
         InputAddTensor add;
@@ -76,8 +84,11 @@ InpaintConditioning assemble_inpaint_conditioning(
         } else if (desc.name == "inpaint_masked_input") {
             add.data = inpaint_masked_input;
         } else if (desc.name == "tf_inpaint_mask") {
-            // Strictly causal inference => tf_inpaint_mask equals inpaint_mask.
-            add.data = inpaint_mask;
+            if (tf_inpaint_mask_override != nullptr) {
+                add.data = *tf_inpaint_mask_override;
+            } else {
+                add.data = inpaint_mask;
+            }
         } else {
             std::cerr << "[InpaintConditioningAssembler] Unknown input_add key '"
                       << desc.name << "', filling with zeros" << std::endl;

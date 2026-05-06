@@ -60,7 +60,7 @@ int main()
         seconds_total,
         streamgen_latent, input_latent,
         {}, {},
-        keep_ratio, 42, steps, cfg_scale,
+        keep_ratio, /*future_visibility_frames=*/0, 42, steps, cfg_scale,
         nullptr,
         noise
     );

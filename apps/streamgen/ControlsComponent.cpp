@@ -264,6 +264,41 @@ ControlsComponent::ControlsComponent()
     };
     addAndMakeVisible(m_keep_ratio_slider);
 
+    // Future-visibility slider: signed offset for tf_inpaint_mask only (sax visibility).
+    // Slider is in seconds, internally converted to latent frames via downsampling_ratio /
+    // sample_rate (default constants give ~46 ms per frame). Range is wider than what is in
+    // distribution; the C++ pipeline clamps tf_keep_frames to [0, T]. We disallow positive
+    // lookahead (slider max = 0) because the shipped checkpoint trained only on
+    // future_visibility in [-4, 0] (see base-fused-inp-add.json).
+    m_future_visibility_label.setText("Lookahead:", juce::dontSendNotification);
+    addAndMakeVisible(m_future_visibility_label);
+
+    m_future_visibility_slider.setRange(-2.0, 0.0, 0.05); // seconds; UI cap, real clamp is in pipeline
+    m_future_visibility_slider.setValue(0.0);
+    m_future_visibility_slider.setTextBoxStyle(juce::Slider::TextBoxRight, false, 90, 20);
+    // Display "<seconds>s (<frames> fr)". One frame = 2048/44100 s ~ 46 ms.
+    m_future_visibility_slider.textFromValueFunction = [](double sec) -> juce::String
+    {
+        const int frames = static_cast<int>(std::lround(sec * (44100.0 / 2048.0)));
+        return juce::String(sec, 2) + "s (" + juce::String(frames) + " fr)";
+    };
+    m_future_visibility_slider.valueFromTextFunction = [](const juce::String& text) -> double
+    {
+        // Accept either "1.23" or "1.23s (...)" — parse the leading number.
+        return text.getDoubleValue();
+    };
+    m_future_visibility_slider.updateText();
+    m_future_visibility_slider.onValueChange = [this]()
+    {
+        if (on_future_visibility_changed)
+        {
+            const double sec = m_future_visibility_slider.getValue();
+            const int frames = static_cast<int>(std::lround(sec * (44100.0 / 2048.0)));
+            on_future_visibility_changed(frames);
+        }
+    };
+    addAndMakeVisible(m_future_visibility_slider);
+
     m_steps_label.setText("Steps:", juce::dontSendNotification);
     addAndMakeVisible(m_steps_label);
 
@@ -541,7 +576,7 @@ void ControlsComponent::layout_inference_rows(juce::Rectangle<int> inner)
 {
     const int row_h = 26;
     const int spacing = 4;
-    const int lbl = 52;
+    const int lbl = 80;
 
     auto row1 = inner.removeFromTop(row_h);
     auto left = row1.removeFromLeft(row1.getWidth() / 2 - spacing / 2);
@@ -553,8 +588,12 @@ void ControlsComponent::layout_inference_rows(juce::Rectangle<int> inner)
 
     inner.removeFromTop(spacing);
     auto row2 = inner.removeFromTop(row_h);
-    m_cfg_label.setBounds(row2.removeFromLeft(lbl));
-    m_cfg_slider.setBounds(row2);
+    auto row2_left = row2.removeFromLeft(row2.getWidth() / 2 - spacing / 2);
+    auto row2_right = row2;
+    m_future_visibility_label.setBounds(row2_left.removeFromLeft(lbl));
+    m_future_visibility_slider.setBounds(row2_left);
+    m_cfg_label.setBounds(row2_right.removeFromLeft(lbl));
+    m_cfg_slider.setBounds(row2_right);
 }
 
 void ControlsComponent::layout_session_rows(juce::Rectangle<int> inner)
