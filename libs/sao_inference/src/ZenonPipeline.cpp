@@ -226,7 +226,7 @@ std::vector<float> ZenonPipeline::generate(
         *t5_masked_ptr, T5_SEQ_LEN,
         seconds_embed, cond_dim,
         streamgen_latent, inpaint_mask, inpaint_masked_input,
-        m_config.input_add_keys, C, T
+        m_config.input_add_keys, m_config.gate_input_add_key, C, T
     );
     m_timing.conditioning_ms = elapsed_ms(t0);
 

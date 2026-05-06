@@ -59,6 +59,26 @@ ZenonPipelineConfig ZenonPipelineConfig::load(const std::string& manifest_path)
         }
     }
 
+    // Fused-input-add manifests carry the precomputed total. Older manifests
+    // omit it; sum the per-key descriptors as a safe fallback.
+    int summed_channels = 0;
+    for (const auto& d : config.input_add_keys) summed_channels += d.channels;
+    config.input_add_total_channels = j.value("input_add_total_channels", summed_channels);
+
+    // Gate-source key: new manifests prefer "tf_inpaint_mask"; legacy ones
+    // implicitly used "inpaint_mask". When unspecified, fall back to whatever
+    // the manifest's input_add_keys actually contains.
+    std::string default_gate;
+    for (const auto& d : config.input_add_keys) {
+        if (d.name == "tf_inpaint_mask") { default_gate = "tf_inpaint_mask"; break; }
+    }
+    if (default_gate.empty()) {
+        for (const auto& d : config.input_add_keys) {
+            if (d.name == "inpaint_mask") { default_gate = "inpaint_mask"; break; }
+        }
+    }
+    config.gate_input_add_key = j.value("gate_input_add_key", default_gate);
+
     if (j.contains("distribution_shift") && !j["distribution_shift"].is_null()) {
         auto& ds = j["distribution_shift"];
         config.dist_shift.enabled = true;
@@ -107,6 +127,8 @@ ZenonPipelineConfig ZenonPipelineConfig::load(const std::string& manifest_path)
               << " latent_dim=" << config.latent_dim
               << " latent_length=" << config.latent_length
               << " input_add_keys=" << config.input_add_keys.size()
+              << " input_add_total_channels=" << config.input_add_total_channels
+              << " gate=" << (config.gate_input_add_key.empty() ? "<none>" : config.gate_input_add_key)
               << " dist_shift=" << (config.dist_shift.enabled ? "yes" : "no")
               << std::endl;
 

@@ -44,6 +44,16 @@ struct ZenonPipelineConfig {
     std::vector<std::string> global_cond_ids;
     std::vector<InputAddKeyDescriptor> input_add_keys;
 
+    /// Sum of channels across all input_add keys. Read directly from the
+    /// manifest field `input_add_total_channels`; falls back to summing the
+    /// per-key descriptors when missing (legacy manifests).
+    int input_add_total_channels = 0;
+
+    /// Which input_add entry's data the assembler uses as the gate. Read
+    /// from the manifest field `gate_input_add_key`. New fused-input-add
+    /// models use "tf_inpaint_mask"; legacy manifests use "inpaint_mask".
+    std::string gate_input_add_key;
+
     DistributionShiftConfig dist_shift;
     std::string diffusion_objective = "rectified_flow";
     float vae_scale = 1.0f;

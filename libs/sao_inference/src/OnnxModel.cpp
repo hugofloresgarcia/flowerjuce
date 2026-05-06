@@ -21,6 +21,7 @@ OnnxModel::OnnxModel(const std::string& model_path, bool use_cuda, bool use_core
     }
 
     if (use_migraphx) {
+#if defined(__linux__) && defined(SAO_HAVE_MIGRAPHX)
         auto* migraphx_status = OrtSessionOptionsAppendExecutionProvider_MIGraphX(m_session_options, 0);
         if (migraphx_status != nullptr) {
             const char* msg = OrtGetApiBase()->GetApi(ORT_API_VERSION)->GetErrorMessage(migraphx_status);
@@ -29,6 +30,10 @@ OnnxModel::OnnxModel(const std::string& model_path, bool use_cuda, bool use_core
             assert(false && "Failed to append MIGraphX execution provider");
         }
         std::cout << "[sao::OnnxModel] MIGraphX EP enabled (device 0)" << std::endl;
+#else
+        std::cerr << "[sao::OnnxModel] MIGraphX EP requested but this build was not "
+                     "compiled with MIGraphX support; ignoring." << std::endl;
+#endif
     }
 
 #ifdef __APPLE__

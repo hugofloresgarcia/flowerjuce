@@ -130,6 +130,7 @@ set(SAO_INFERENCE_SOURCES
     src/NumberEmbedder.cpp
     src/ConditioningAssembler.cpp
     src/InpaintConditioningAssembler.cpp
+    src/InputAddTensor.cpp
     src/RectifiedFlowSampler.cpp
     src/InpaintSampler.cpp
     src/Pipeline.cpp

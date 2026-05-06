@@ -65,19 +65,15 @@ std::vector<float> sample_euler_cfg_inpaint(
     std::memcpy(batch_global.data(), conditioning.global_embed.data(), global_bytes);
     std::memcpy(batch_global.data() + cond_dim, conditioning.global_embed.data(), global_bytes);
 
-    std::vector<InputAddTensor> batch_input_add;
-    batch_input_add.reserve(conditioning.input_add.size());
-    for (const auto& add : conditioning.input_add) {
-        InputAddTensor batch_add;
-        batch_add.name = add.name;
-        batch_add.channels = add.channels;
-        const int add_size = add.channels * T;
-        batch_add.data.resize(static_cast<size_t>(2 * add_size));
-        const size_t add_bytes = static_cast<size_t>(add_size) * sizeof(float);
-        std::memcpy(batch_add.data.data(), add.data.data(), add_bytes);
-        std::memcpy(batch_add.data.data() + add_size, add.data.data(), add_bytes);
-        batch_input_add.push_back(std::move(batch_add));
-    }
+    // Duplicate the (already-concatenated) input_add_cond along the batch axis
+    // for CFG. Both halves use the same conditioning — DiffusionTransformer.forward
+    // in Python does the same (cond and uncond branches see identical input_add).
+    const int add_size = conditioning.input_add_total_channels * T;
+    assert(static_cast<int>(conditioning.input_add_concat.size()) == add_size);
+    std::vector<float> batch_input_add_cond(static_cast<size_t>(2 * add_size));
+    const size_t add_bytes = static_cast<size_t>(add_size) * sizeof(float);
+    std::memcpy(batch_input_add_cond.data(),            conditioning.input_add_concat.data(), add_bytes);
+    std::memcpy(batch_input_add_cond.data() + add_size, conditioning.input_add_concat.data(), add_bytes);
 
     std::vector<float> v(static_cast<size_t>(latent_size));
 
@@ -95,7 +91,8 @@ std::vector<float> sample_euler_cfg_inpaint(
 
         auto batch_output = dit.forward(
             batch_x, batch_t, batch_cross_attn, batch_global,
-            batch_input_add, 2, seq_len, C, T, cond_dim
+            batch_input_add_cond, 2, seq_len, C, T, cond_dim,
+            conditioning.input_add_total_channels
         );
         for (int j = 0; j < latent_size; ++j) {
             float cond_out = batch_output[j];
