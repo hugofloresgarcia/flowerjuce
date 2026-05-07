@@ -10,6 +10,9 @@ option(SAO_ENABLE_MLX "Link Apple MLX for Metal Zenon VAE (Apple Silicon macOS o
 option(SAO_FETCH_ONNXRUNTIME_GPU
     "On Linux, FetchContent downloads onnxruntime-linux-x64-gpu (CUDA) instead of CPU-only. Ignored on other platforms."
     OFF)
+option(SAO_ENABLE_MIGRAPHX
+    "Enable MIGraphX execution provider (AMD GPU, Linux only). Requires an ONNX Runtime build that ships libonnxruntime_providers_migraphx.so (point ONNXRUNTIME_ROOT at it)."
+    OFF)
 
 # --- Dependencies ---
 
@@ -130,7 +133,6 @@ set(SAO_INFERENCE_SOURCES
     src/NumberEmbedder.cpp
     src/ConditioningAssembler.cpp
     src/InpaintConditioningAssembler.cpp
-    src/InputAddTensor.cpp
     src/RectifiedFlowSampler.cpp
     src/InpaintSampler.cpp
     src/Pipeline.cpp
@@ -167,6 +169,14 @@ if(SAO_ENABLE_MLX)
     target_compile_definitions(sao_inference PUBLIC SAO_ENABLE_MLX=1)
     target_link_libraries(sao_inference PUBLIC mlx)
     target_compile_features(sao_inference PUBLIC cxx_std_20)
+endif()
+
+if(SAO_ENABLE_MIGRAPHX)
+    if(NOT UNIX OR APPLE)
+        message(FATAL_ERROR "SAO_ENABLE_MIGRAPHX is only supported on Linux.")
+    endif()
+    target_compile_definitions(sao_inference PUBLIC SAO_HAVE_MIGRAPHX=1)
+    message(STATUS "MIGraphX EP enabled (SAO_HAVE_MIGRAPHX=1)")
 endif()
 
 if(APPLE)
