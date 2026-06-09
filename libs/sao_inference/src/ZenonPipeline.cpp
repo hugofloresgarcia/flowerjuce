@@ -51,6 +51,37 @@ static void save_npy_float(const std::string& path, const std::vector<float>& da
     cnpy::npy_save(path, data.data(), shape, "w");
 }
 
+/// Pads (with trailing zeros) or truncates stereo audio to exactly `target_samples` per channel.
+///
+/// Audio layout is flat row-major (C, N): all samples for channel 0 followed by channel 1.
+/// This is needed when a compiled fixed-shape model (e.g. MIGraphX) requires exactly
+/// `target_samples` but the caller supplies audio of a different length.
+///
+/// Args:
+///     audio: Stereo audio, flat row-major (2, actual_samples). Size must be even.
+///     target_samples: Desired number of samples per channel.
+///
+/// Returns:
+///     Stereo audio resized to (2, target_samples).
+static std::vector<float> pad_or_truncate_stereo_audio(
+    const std::vector<float>& audio,
+    int target_samples)
+{
+    constexpr int CHANNELS = 2;
+    assert(audio.size() % CHANNELS == 0);
+    const int actual_samples = static_cast<int>(audio.size()) / CHANNELS;
+    const int copy_samples = std::min(actual_samples, target_samples);
+
+    std::vector<float> result(static_cast<size_t>(CHANNELS) * target_samples, 0.0f);
+    for (int c = 0; c < CHANNELS; ++c)
+    {
+        const float* src = audio.data() + static_cast<size_t>(c) * actual_samples;
+        float* dst = result.data() + static_cast<size_t>(c) * target_samples;
+        std::copy(src, src + copy_samples, dst);
+    }
+    return result;
+}
+
 ZenonPipeline::ZenonPipeline(const ZenonPipelineConfig& config)
     : m_config(config)
 {
@@ -121,6 +152,14 @@ std::vector<float> ZenonPipeline::generate(
 
     auto total_start = Clock::now();
 
+    std::cout << "[ZenonPipeline] generate() called:"
+              << " streamgen_audio.size()=" << streamgen_audio.size()
+              << " (" << streamgen_audio.size() / 2 << " samples/ch)"
+              << " input_audio.size()=" << input_audio.size()
+              << " (" << input_audio.size() / 2 << " samples/ch)"
+              << " expected=" << m_config.sample_size
+              << std::endl;
+
     // ---- Step 1: (V<0) Re-align streamgen audio so it stays time-locked to drums ----
     // For negative future_visibility, the model sees fewer sax frames than drum frames.
     // To keep the saxophone content temporally lined up with the drum prefix, we shift
@@ -128,7 +167,22 @@ std::vector<float> ZenonPipeline::generate(
     // channel and append the same number of zeros at the end. The trailing zeros sit
     // inside the masked-out region of tf_inpaint_mask anyway. This mirrors the right-pad
     // training behaviour for short prefixes.
-    const std::vector<float>* streamgen_audio_for_encode = &streamgen_audio;
+    //
+    // Pad/truncate streamgen audio to the fixed model size first so that the realignment
+    // assert and the MIGraphX-compiled VAE encoder both see exactly (2, sample_size).
+    std::vector<float> streamgen_audio_sized_buf;
+    const std::vector<float>* streamgen_audio_base = &streamgen_audio;
+    if (!streamgen_audio.empty() &&
+        static_cast<int>(streamgen_audio.size()) != 2 * m_config.sample_size)
+    {
+        std::cout << "[ZenonPipeline] Padding/truncating streamgen audio: "
+                  << streamgen_audio.size() / 2 << " -> " << m_config.sample_size
+                  << " samples per channel" << std::endl;
+        streamgen_audio_sized_buf = pad_or_truncate_stereo_audio(streamgen_audio, m_config.sample_size);
+        streamgen_audio_base = &streamgen_audio_sized_buf;
+    }
+
+    const std::vector<float>* streamgen_audio_for_encode = streamgen_audio_base;
     std::vector<float> streamgen_audio_realigned;
     if (future_visibility_frames < 0 && !streamgen_audio.empty()) {
         constexpr int CHANNELS = 2;
@@ -138,11 +192,11 @@ std::vector<float> ZenonPipeline::generate(
             // Asking to shift everything off the front -> all silence.
             streamgen_audio_realigned.assign(static_cast<size_t>(CHANNELS) * N, 0.0f);
         } else {
-            assert(static_cast<int>(streamgen_audio.size()) == CHANNELS * N);
+            assert(static_cast<int>(streamgen_audio_base->size()) == CHANNELS * N);
             streamgen_audio_realigned.resize(static_cast<size_t>(CHANNELS) * N, 0.0f);
             for (int c = 0; c < CHANNELS; ++c) {
                 // Take samples [pad_samples, N) of channel c and write them to [0, N - pad_samples).
-                const float* src = streamgen_audio.data() + static_cast<size_t>(c) * N + pad_samples;
+                const float* src = streamgen_audio_base->data() + static_cast<size_t>(c) * N + pad_samples;
                 float* dst = streamgen_audio_realigned.data() + static_cast<size_t>(c) * N;
                 std::copy(src, src + (N - pad_samples), dst);
                 // Trailing [N - pad_samples, N) is left at the zero-init from resize().
@@ -165,18 +219,33 @@ std::vector<float> ZenonPipeline::generate(
     const bool need_encode_streamgen = streamgen_latent_in.empty();
     const bool need_encode_input = input_latent_in.empty();
 
+    // Pad/truncate input audio to the fixed model size so the MIGraphX-compiled VAE encoder
+    // receives exactly (2, sample_size) regardless of what the caller supplies.
+    std::vector<float> input_audio_sized_buf;
+    const std::vector<float>* input_audio_for_encode = &input_audio;
+    if (need_encode_input && !input_audio.empty() &&
+        static_cast<int>(input_audio.size()) != 2 * m_config.sample_size)
+    {
+        std::cout << "[ZenonPipeline] Padding/truncating input audio: "
+                  << input_audio.size() / 2 << " -> " << m_config.sample_size
+                  << " samples per channel" << std::endl;
+        input_audio_sized_buf = pad_or_truncate_stereo_audio(input_audio, m_config.sample_size);
+        input_audio_for_encode = &input_audio_sized_buf;
+    }
+
     if (need_encode_streamgen && need_encode_input) {
         // Fast path: one batched VAE encode call with (B=2, 2, N). Concatenating along batch
         // axis 0 is a raw append since both inputs are already row-major (1, 2, N) of the same
         // length.
         assert(!streamgen_audio_for_encode->empty());
-        assert(!input_audio.empty());
-        assert(streamgen_audio_for_encode->size() == input_audio.size());
+        assert(!input_audio_for_encode->empty());
+        assert(streamgen_audio_for_encode->size() == input_audio_for_encode->size());
         std::vector<float> combined_audio;
-        combined_audio.reserve(streamgen_audio_for_encode->size() + input_audio.size());
+        combined_audio.reserve(streamgen_audio_for_encode->size() + input_audio_for_encode->size());
         combined_audio.insert(combined_audio.end(),
                               streamgen_audio_for_encode->begin(), streamgen_audio_for_encode->end());
-        combined_audio.insert(combined_audio.end(), input_audio.begin(), input_audio.end());
+        combined_audio.insert(combined_audio.end(),
+                              input_audio_for_encode->begin(), input_audio_for_encode->end());
 
         std::cout << "[ZenonPipeline] VAE-encoding streamgen+input (batched, B=2)..." << std::flush;
         auto batched_latent = m_vae_encoder->encode_batch(combined_audio, 2, m_config.sample_size, C);
@@ -198,10 +267,10 @@ std::vector<float> ZenonPipeline::generate(
         }
 
         if (need_encode_input) {
-            assert(!input_audio.empty());
+            assert(!input_audio_for_encode->empty());
             auto t_enc2 = Clock::now();
             std::cout << "[ZenonPipeline] VAE-encoding input audio..." << std::flush;
-            input_latent = m_vae_encoder->encode(input_audio, m_config.sample_size, C);
+            input_latent = m_vae_encoder->encode(*input_audio_for_encode, m_config.sample_size, C);
             std::cout << " done (" << elapsed_ms(t_enc2) << " ms)" << std::endl;
         } else {
             input_latent = input_latent_in;
