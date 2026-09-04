@@ -15,6 +15,7 @@
 
 #include <memory>
 #include <string>
+#include <vector>
 
 namespace streamgen {
 
@@ -35,6 +36,10 @@ public:
     ~StreamGenComponent() override;
 
     /// Load the inference pipeline. Must be called after construction.
+    ///
+    /// The backend flags are remembered and reused when the user picks another manifest
+    /// from the model combo box, which lists every sibling model directory of
+    /// `manifest_path` that holds a manifest with the same file name.
     ///
     /// Args:
     ///     manifest_path: Path to zenon_pipeline_manifest.json.
@@ -58,6 +63,20 @@ private:
     void load_warmup_audio();
     void try_load_default_audio_from_repo(const juce::File& manifest_file);
 
+    /// Fill the model combo with every manifest named like `active_manifest` in a sibling
+    /// directory of its parent, and select `active_manifest`. Fires no callback.
+    void populate_model_choices(const juce::File& active_manifest);
+
+    /// Stop and destroy the current worker (if any), then load `manifest_file` with the
+    /// backend flags captured by `load_pipeline`. Restores the combo selection on failure.
+    void activate_pipeline(const juce::File& manifest_file);
+
+    /// Model combo handler: reload the pipeline from the picked manifest.
+    ///
+    /// Args:
+    ///     choice_index: Index into `m_manifest_choices`.
+    void switch_model(int choice_index);
+
     /// Set scheduler + UI to default BPM / 4/4 musical grid when default repo test assets are loaded.
     void apply_default_musical_grid_preset();
 
@@ -79,6 +98,18 @@ private:
     MixerComponent m_mixer;
 
     std::unique_ptr<SimulationWindow> m_simulation_window;
+
+    /// Execution providers chosen at startup, reused for every manifest switch.
+    bool m_use_cuda = false;
+    bool m_use_coreml = false;
+    bool m_use_mlx_vae = false;
+    bool m_use_migraphx = false;
+
+    /// Manifests offered by the model combo, in combo item order.
+    std::vector<juce::File> m_manifest_choices;
+
+    /// Manifest backing the loaded pipeline; empty until a load succeeds.
+    juce::File m_active_manifest;
 
     juce::Label m_title_label;
 

@@ -40,7 +40,22 @@ constexpr double k_seconds_slider_step = 0.05;
 constexpr double k_lookahead_min_seconds = -2.0;
 constexpr double k_lookahead_max_seconds = 0.0;
 
+/// Model picker text height: 25% above the 14 px LayerCake combo default.
+constexpr float k_model_combo_font_size = 17.5f;
+
 } // namespace
+
+juce::Font ControlsComponent::ModelComboLookAndFeel::getComboBoxFont(juce::ComboBox&)
+{
+    return juce::Font(juce::FontOptions(
+        juce::Font::getDefaultMonospacedFontName(), k_model_combo_font_size, juce::Font::plain));
+}
+
+juce::Font ControlsComponent::ModelComboLookAndFeel::getPopupMenuFont()
+{
+    return juce::Font(juce::FontOptions(
+        juce::Font::getDefaultMonospacedFontName(), k_model_combo_font_size, juce::Font::plain));
+}
 
 ControlsComponent::ControlsComponent()
 {
@@ -298,6 +313,24 @@ ControlsComponent::ControlsComponent()
     };
     addAndMakeVisible(m_reset_button);
 
+    m_model_label.setText("Model", juce::dontSendNotification);
+    addAndMakeVisible(m_model_label);
+
+    m_model_combo.setLookAndFeel(&m_model_combo_look_and_feel);
+    m_model_combo.setTextWhenNoChoicesAvailable("<no manifests>");
+    m_model_combo.onChange = [this]()
+    {
+        const int idx = m_model_combo.getSelectedItemIndex();
+        if (idx < 0)
+        {
+            DBG("ControlsComponent: model combo changed with no selection");
+            return;
+        }
+        if (on_model_changed)
+            on_model_changed(idx);
+    };
+    addAndMakeVisible(m_model_combo);
+
     m_generation_toggle.onClick = [this]()
     {
         if (on_generation_enabled_changed)
@@ -306,6 +339,11 @@ ControlsComponent::ControlsComponent()
     addAndMakeVisible(m_generation_toggle);
 
     refresh_click_track_control_enabled_state();
+}
+
+ControlsComponent::~ControlsComponent()
+{
+    m_model_combo.setLookAndFeel(nullptr);
 }
 
 double ControlsComponent::lookahead_frames_per_second() const
@@ -327,6 +365,20 @@ void ControlsComponent::set_model_constants(const ModelConstants& constants)
         + juce::String(constants.sample_rate)
         + " downsampling_ratio=" + juce::String(constants.downsampling_ratio)
         + " frames_per_s=" + juce::String(lookahead_frames_per_second(), 3));
+}
+
+void ControlsComponent::set_model_choices(const juce::StringArray& names, int selected_index)
+{
+    jassert(names.size() > 0);
+    jassert(selected_index >= 0 && selected_index < names.size());
+
+    m_model_combo.clear(juce::dontSendNotification);
+    for (int i = 0; i < names.size(); ++i)
+        m_model_combo.addItem(names[i], i + 1);
+    m_model_combo.setSelectedItemIndex(selected_index, juce::dontSendNotification);
+
+    DBG("ControlsComponent: model choices [" + names.joinIntoString(", ")
+        + "] selected=" + names[selected_index]);
 }
 
 void ControlsComponent::refresh_click_track_control_enabled_state()
@@ -500,6 +552,9 @@ void ControlsComponent::layout_session_rows(juce::Rectangle<int> inner)
     const int spacing = 4;
     const int btn_w = 112;
     const int small_toggle_w = 92;
+    const int reset_btn_w = 88;
+    const int model_lbl_w = 48;
+    const int model_cb_w = 180;
 
     auto row = inner.removeFromTop(row_h);
     m_generation_toggle.setBounds(row.removeFromLeft(168));
@@ -516,7 +571,10 @@ void ControlsComponent::layout_session_rows(juce::Rectangle<int> inner)
 
     inner.removeFromTop(spacing);
     row = inner.removeFromTop(row_h);
-    m_reset_button.setBounds(row.removeFromLeft(88));
+    m_reset_button.setBounds(row.removeFromLeft(reset_btn_w));
+    row.removeFromLeft(spacing);
+    m_model_label.setBounds(row.removeFromLeft(model_lbl_w));
+    m_model_combo.setBounds(row.removeFromLeft(model_cb_w));
 }
 
 void ControlsComponent::resized()

@@ -2,6 +2,8 @@
 #include "MusicalTime.h"
 #include "StreamGenDebugLog.h"
 
+#include <algorithm>
+
 namespace streamgen {
 
 namespace {
@@ -153,6 +155,8 @@ StreamGenComponent::StreamGenComponent(
 
     m_controls.on_reset_clicked = [this]() { reset_session(); };
 
+    m_controls.on_model_changed = [this](int choice_index) { switch_model(choice_index); };
+
     m_controls.on_generation_enabled_changed = [this](bool enabled)
     {
         m_processor.scheduler().generation_enabled.store(enabled, std::memory_order_relaxed);
@@ -201,29 +205,115 @@ void StreamGenComponent::load_pipeline(
     bool use_mlx_vae,
     bool use_migraphx)
 {
-    streamgen_log("load_pipeline: removeAudioCallback (safe window for processor.configure / ring rebuild)");
+    m_use_cuda = use_cuda;
+    m_use_coreml = use_coreml;
+    m_use_mlx_vae = use_mlx_vae;
+    m_use_migraphx = use_migraphx;
+
+    const juce::File manifest_file{juce::String(manifest_path)};
+    populate_model_choices(manifest_file);
+    activate_pipeline(manifest_file);
+}
+
+void StreamGenComponent::populate_model_choices(const juce::File& active_manifest)
+{
+    // Layout assumed: models/<model>/<manifest name>. Every sibling directory holding a
+    // manifest with the same file name is another model the user can switch to.
+    const juce::File models_dir = active_manifest.getParentDirectory().getParentDirectory();
+    const juce::String manifest_name = active_manifest.getFileName();
+
+    m_manifest_choices.clear();
+    for (const juce::File& dir : models_dir.findChildFiles(juce::File::findDirectories, false))
+    {
+        const juce::File candidate = dir.getChildFile(manifest_name);
+        if (candidate.existsAsFile())
+            m_manifest_choices.push_back(candidate);
+    }
+
+    std::sort(m_manifest_choices.begin(), m_manifest_choices.end(),
+        [](const juce::File& a, const juce::File& b)
+        {
+            return a.getFullPathName().compareNatural(b.getFullPathName()) < 0;
+        });
+
+    const bool active_listed = std::any_of(
+        m_manifest_choices.begin(), m_manifest_choices.end(),
+        [&active_manifest](const juce::File& f) { return f == active_manifest; });
+    if (!active_listed)
+    {
+        streamgen_log("model_choices: active manifest outside " + models_dir.getFullPathName()
+            + ", listing it on its own");
+        m_manifest_choices.insert(m_manifest_choices.begin(), active_manifest);
+    }
+
+    juce::StringArray names;
+    int selected = 0;
+    for (size_t i = 0; i < m_manifest_choices.size(); ++i)
+    {
+        names.add(m_manifest_choices[i].getParentDirectory().getFileName());
+        if (m_manifest_choices[i] == active_manifest)
+            selected = static_cast<int>(i);
+    }
+
+    m_controls.set_model_choices(names, selected);
+    streamgen_log("model_choices: [" + names.joinIntoString(", ") + "] selected=" + names[selected]);
+}
+
+void StreamGenComponent::activate_pipeline(const juce::File& manifest_file)
+{
+    if (!manifest_file.existsAsFile())
+    {
+        DBG("StreamGenComponent: manifest not found: " + manifest_file.getFullPathName());
+        streamgen_log("activate_pipeline: manifest missing " + manifest_file.getFullPathName());
+        return;
+    }
+
+    streamgen_log("activate_pipeline: removeAudioCallback (safe window for processor.configure /"
+        " ring rebuild) manifest=" + manifest_file.getFullPathName());
     m_device_manager.removeAudioCallback(&m_processor);
+
+    // Free the previous ONNX sessions before allocating the next model's.
+    if (m_worker != nullptr)
+    {
+        streamgen_log("activate_pipeline: stopping previous worker");
+        m_worker->stopThread(8000);
+        m_worker.reset();
+    }
 
     m_worker = std::make_unique<InferenceWorker>(m_processor);
 
-    if (!m_worker->load_pipeline(manifest_path, use_cuda, use_coreml, use_mlx_vae, use_migraphx))
+    const std::string manifest_path = manifest_file.getFullPathName().toStdString();
+    if (!m_worker->load_pipeline(manifest_path, m_use_cuda, m_use_coreml, m_use_mlx_vae, m_use_migraphx))
     {
         DBG("StreamGenComponent: FAILED to load pipeline from " + juce::String(manifest_path));
-        streamgen_log("load_pipeline: FAILED, re-attaching audio callback");
+        streamgen_log("activate_pipeline: FAILED, re-attaching audio callback");
         m_worker.reset();
         reattach_audio_callback_after_pipeline_load();
+        if (m_active_manifest.existsAsFile())
+            populate_model_choices(m_active_manifest);
         return;
     }
+
+    const bool first_activation = !m_active_manifest.existsAsFile();
+    m_active_manifest = manifest_file;
 
     // The worker's load_pipeline() calls m_processor.configure(), so the manifest constants are
     // live here. The Lookahead slider needs them to convert seconds <-> latent frames.
     m_controls.set_model_constants(m_processor.constants());
 
+    // A fresh worker starts from its own default prompt; carry over what the UI shows.
+    m_worker->set_prompt(m_controls.prompt_text().toStdString());
+
     // While the callback is detached, zero playhead/rings/timeline so the first block sees abs=0.
     // Warmup audio uses absolute_sample_pos % loop; this avoids a stale playhead after reload.
     m_processor.reset_timeline_and_transport();
 
-    try_load_default_audio_from_repo(juce::File(manifest_path));
+    // Warmup/simulation buffers and the musical grid survive a manifest switch, so only seed
+    // them on the first load — re-seeding would reset the user's BPM and quantize settings.
+    if (first_activation)
+        try_load_default_audio_from_repo(manifest_file);
+    else
+        streamgen_log("activate_pipeline: model switch, keeping loaded audio and musical grid");
 
     reattach_audio_callback_after_pipeline_load();
 
@@ -231,7 +321,26 @@ void StreamGenComponent::load_pipeline(
 
     m_worker->startThread(juce::Thread::Priority::high);
     DBG("StreamGenComponent: inference worker started");
-    streamgen_log("load_pipeline: worker thread started");
+    streamgen_log("activate_pipeline: worker thread started");
+}
+
+void StreamGenComponent::switch_model(int choice_index)
+{
+    if (choice_index < 0 || choice_index >= static_cast<int>(m_manifest_choices.size()))
+    {
+        DBG("StreamGenComponent: switch_model out of range: " + juce::String(choice_index));
+        return;
+    }
+
+    const juce::File manifest_file = m_manifest_choices[static_cast<size_t>(choice_index)];
+    if (manifest_file == m_active_manifest)
+    {
+        DBG("StreamGenComponent: switch_model already active: " + manifest_file.getFullPathName());
+        return;
+    }
+
+    streamgen_log("UI: switch_model -> " + manifest_file.getFullPathName());
+    activate_pipeline(manifest_file);
 }
 
 void StreamGenComponent::reset_session()

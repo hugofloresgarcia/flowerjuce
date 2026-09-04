@@ -1,6 +1,7 @@
 #pragma once
 
 #include "GenerationScheduler.h"
+#include "LayerCakeLookAndFeel.h"
 #include <juce_gui_basics/juce_gui_basics.h>
 #include <functional>
 
@@ -12,6 +13,7 @@ class StreamGenProcessor;
 class ControlsComponent : public juce::Component {
 public:
     ControlsComponent();
+    ~ControlsComponent() override;
 
     void paint(juce::Graphics& g) override;
     void resized() override;
@@ -35,12 +37,24 @@ public:
     std::function<void()> on_simulate_clicked;
     std::function<void()> on_audio_settings_clicked;
     std::function<void()> on_reset_clicked;
+    /// Fires the index (into the list passed to `set_model_choices`) of the picked manifest.
+    std::function<void(int)> on_model_changed;
     std::function<void(bool)> on_generation_enabled_changed;
     std::function<void(bool)> on_click_track_enabled_changed;
     std::function<void(float)> on_click_track_volume_changed;
 
     /// Set the prompt text (e.g. when loading saved state).
     void set_prompt(const juce::String& text) { m_prompt_editor.setText(text, false); }
+
+    /// Current prompt text. Used to re-apply the prompt to a freshly loaded pipeline.
+    juce::String prompt_text() const { return m_prompt_editor.getText(); }
+
+    /// Fill the model picker with the available manifests. Fires no callback.
+    ///
+    /// Args:
+    ///     names: Display name per manifest, in the same order as the caller's manifest list.
+    ///     selected_index: Index of the currently loaded manifest; must be within `names`.
+    void set_model_choices(const juce::StringArray& names, int selected_index);
 
     /// Sync musical toggle, BPM, sig, quantize, hop, land delay, and loop-last toggle (no callbacks).
     void sync_time_mode_from_scheduler(const GenerationScheduler& sched, bool loop_last_generation_enabled);
@@ -67,6 +81,14 @@ public:
     void sync_click_track_from_processor(const StreamGenProcessor& processor);
 
 private:
+    /// Draws the model picker (box text and popup items) larger than the rest of the panel,
+    /// which keeps the LayerCake defaults.
+    class ModelComboLookAndFeel : public LayerCakeLookAndFeel {
+    public:
+        juce::Font getComboBoxFont(juce::ComboBox&) override;
+        juce::Font getPopupMenuFont() override;
+    };
+
     static int time_sig_combo_index_for(int numerator, int denominator);
     void layout_prompt_block(juce::Rectangle<int> inner);
     void layout_musical_rows(juce::Rectangle<int> inner);
@@ -124,6 +146,10 @@ private:
     juce::TextButton m_simulate_button{"Simulate..."};
     juce::TextButton m_audio_settings_button{"Audio Settings"};
     juce::TextButton m_reset_button{"Reset"};
+    /// Declared before `m_model_combo` so it is destroyed after the combo that points at it.
+    ModelComboLookAndFeel m_model_combo_look_and_feel;
+    juce::Label m_model_label;
+    juce::ComboBox m_model_combo;
 
     /// Timing constants backing the Lookahead seconds <-> latent-frame conversion.
     ModelConstants m_model_constants;
