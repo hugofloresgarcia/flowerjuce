@@ -65,7 +65,7 @@ public:
     }
 
     // --- Parameters (set from UI thread, read from audio/worker threads) ---
-    /// Wall-clock hop (seconds) when `musical_time_enabled` is false. Default is overwritten in
+    /// Wall-clock hop (seconds) between generation triggers. Default is overwritten in
     /// `configure()` via `sync_hop_seconds_to_keep_ratio()` (≈ half the ~11.9s window for keep 0.5).
     std::atomic<float> hop_seconds{3.0f};
     std::atomic<float> keep_ratio{0.5f};
@@ -76,24 +76,18 @@ public:
     std::atomic<int> steps{8};
     std::atomic<float> cfg_scale{7.0f};
     /// Seconds after keep_end where generated drums land in the timeline (0 = immediate).
+    /// Absolute wall-clock: independent of BPM and not snapped to the beat grid.
     std::atomic<float> schedule_delay_seconds{0.0f};
     std::atomic<bool> generation_enabled{false};
 
-    /// When true, hop and schedule delay use beats + BPM; ruler/UI show bars/beats.
+    /// When true, launch quantization is active and the ruler/UI show bars/beats.
+    /// Hop and land delay are always wall-clock seconds regardless of this flag.
     std::atomic<bool> musical_time_enabled{false};
     /// Beats per minute (clamped on use to [20, 400]).
     std::atomic<float> bpm{kStreamGenDefaultBpm};
     /// Time signature: beats per bar (numerator) and denominator (display / future).
     std::atomic<int> time_sig_numerator{4};
     std::atomic<int> time_sig_denominator{4};
-    /// Hop interval in quarter-note beats (legacy mirror of hop_bars * time_sig_numerator; UI updates both).
-    std::atomic<float> hop_beats{4.0f};
-    /// Land delay in beats (legacy mirror of schedule_delay_bars * time_sig_numerator).
-    std::atomic<float> schedule_delay_beats{0.0f};
-    /// Hop length in **bars** (musical mode). UI: 0.5, 1–4 bars (fraction of a bar with current numerator).
-    std::atomic<float> hop_bars{1.0f};
-    /// Output land delay in **whole bars** after keep_end (musical mode). UI: 0–4.
-    std::atomic<float> schedule_delay_bars{0.0f};
     /// Launch quantization: 0 = off; else enqueue keep_end snaps forward to multiples of N beats.
     std::atomic<int> quantize_launch_beats{0};
 

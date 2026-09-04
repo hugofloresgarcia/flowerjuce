@@ -19,9 +19,7 @@ public:
     // --- Callbacks (set by the parent component) ---
     std::function<void(const juce::String&)> on_prompt_changed;
     std::function<void(float)> on_hop_changed;
-    std::function<void(float)> on_hop_bars_changed;
     std::function<void(float)> on_schedule_delay_changed;
-    std::function<void(float)> on_schedule_delay_bars_changed;
     std::function<void(float)> on_keep_ratio_changed;
     /// Fires `tf_inpaint_mask` offset in latent frames (signed; UI clamps to [-N, 0]).
     std::function<void(int)> on_future_visibility_changed;
@@ -50,8 +48,16 @@ public:
     /// Set loop-last-gen toggle from code (e.g. auto-off when generation disabled).
     void set_loop_last_generation_toggle(bool on, juce::NotificationType notification);
 
-    /// After toggling musical mode, refresh hop/land controls from scheduler.
+    /// Refresh the hop and land-delay sliders (both in seconds) from the scheduler. No callbacks.
     void sync_hop_delay_controls_from_scheduler(const GenerationScheduler& sched);
+
+    /// Supply the loaded model's timing constants so the Lookahead slider can convert
+    /// seconds to latent frames. Call once the manifest has been loaded; until then the
+    /// slider uses `ModelConstants` defaults.
+    ///
+    /// Args:
+    ///     constants: Sample rate and downsampling ratio from the active pipeline manifest.
+    void set_model_constants(const ModelConstants& constants);
 
     void set_warmup_audio_route_toggle(bool route_to_output, juce::NotificationType notification);
 
@@ -66,10 +72,10 @@ private:
     void layout_musical_rows(juce::Rectangle<int> inner);
     void layout_inference_rows(juce::Rectangle<int> inner);
     void layout_session_rows(juce::Rectangle<int> inner);
-    void refresh_musical_hop_delay_visibility();
     void refresh_click_track_control_enabled_state();
-    void set_hop_bars_combo_from_value(float hop_bars);
-    void set_schedule_delay_bars_combo_from_value(float delay_bars);
+
+    /// Seconds per latent frame for the Lookahead slider, from the loaded manifest.
+    double lookahead_frames_per_second() const;
 
     juce::GroupComponent m_group_prompt{"Prompt"};
     juce::Label m_prompt_label;
@@ -89,11 +95,9 @@ private:
 
     juce::Label m_hop_label;
     juce::Slider m_hop_slider;
-    juce::ComboBox m_hop_bars_combo;
 
     juce::Label m_schedule_delay_label;
     juce::Slider m_schedule_delay_slider;
-    juce::ComboBox m_schedule_delay_bars_combo;
 
     juce::ToggleButton m_click_track_toggle{"Click track"};
     juce::Label m_click_vol_label;
@@ -120,6 +124,9 @@ private:
     juce::TextButton m_simulate_button{"Simulate..."};
     juce::TextButton m_audio_settings_button{"Audio Settings"};
     juce::TextButton m_reset_button{"Reset"};
+
+    /// Timing constants backing the Lookahead seconds <-> latent-frame conversion.
+    ModelConstants m_model_constants;
 };
 
 } // namespace streamgen

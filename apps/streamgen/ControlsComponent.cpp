@@ -27,71 +27,18 @@ constexpr int k_time_sig_preset_count = static_cast<int>(sizeof(k_time_sig_prese
 constexpr int k_quantize_item_ids[] = {0, 1, 2, 4, 8};
 constexpr int k_quantize_item_count = static_cast<int>(sizeof(k_quantize_item_ids) / sizeof(k_quantize_item_ids[0]));
 
-constexpr int k_hop_bar_combo_id_half = 1;
-constexpr int k_hop_bar_combo_id_one = 2;
-constexpr int k_hop_bar_combo_id_two = 3;
-constexpr int k_hop_bar_combo_id_three = 4;
-constexpr int k_hop_bar_combo_id_four = 5;
+constexpr double k_hop_min_seconds = 0.5;
+constexpr double k_hop_max_seconds = 15.0;
+constexpr double k_hop_step_seconds = 0.1;
 
-constexpr int k_delay_bar_combo_id_zero = 1;
-constexpr int k_delay_bar_combo_id_one = 2;
-constexpr int k_delay_bar_combo_id_two = 3;
-constexpr int k_delay_bar_combo_id_three = 4;
-constexpr int k_delay_bar_combo_id_four = 5;
+constexpr double k_schedule_delay_min_seconds = 0.0;
+constexpr double k_schedule_delay_max_seconds = 6.0;
 
-float hop_bars_for_combo_id(int combo_id)
-{
-    if (combo_id == k_hop_bar_combo_id_half)
-        return 0.5f;
-    if (combo_id == k_hop_bar_combo_id_one)
-        return 1.0f;
-    if (combo_id == k_hop_bar_combo_id_two)
-        return 2.0f;
-    if (combo_id == k_hop_bar_combo_id_three)
-        return 3.0f;
-    if (combo_id == k_hop_bar_combo_id_four)
-        return 4.0f;
-    return 1.0f;
-}
+/// Shared by the land-delay and lookahead sliders so both read at the same granularity.
+constexpr double k_seconds_slider_step = 0.05;
 
-int combo_id_for_hop_bars(float hop_bars)
-{
-    if (hop_bars <= 0.625f)
-        return k_hop_bar_combo_id_half;
-    if (hop_bars <= 1.5f)
-        return k_hop_bar_combo_id_one;
-    if (hop_bars <= 2.5f)
-        return k_hop_bar_combo_id_two;
-    if (hop_bars <= 3.5f)
-        return k_hop_bar_combo_id_three;
-    return k_hop_bar_combo_id_four;
-}
-
-float delay_bars_for_combo_id(int combo_id)
-{
-    if (combo_id == k_delay_bar_combo_id_one)
-        return 1.0f;
-    if (combo_id == k_delay_bar_combo_id_two)
-        return 2.0f;
-    if (combo_id == k_delay_bar_combo_id_three)
-        return 3.0f;
-    if (combo_id == k_delay_bar_combo_id_four)
-        return 4.0f;
-    return 0.0f;
-}
-
-int combo_id_for_delay_bars(float delay_bars)
-{
-    if (delay_bars <= 0.5f)
-        return k_delay_bar_combo_id_zero;
-    if (delay_bars <= 1.5f)
-        return k_delay_bar_combo_id_one;
-    if (delay_bars <= 2.5f)
-        return k_delay_bar_combo_id_two;
-    if (delay_bars <= 3.5f)
-        return k_delay_bar_combo_id_three;
-    return k_delay_bar_combo_id_four;
-}
+constexpr double k_lookahead_min_seconds = -2.0;
+constexpr double k_lookahead_max_seconds = 0.0;
 
 } // namespace
 
@@ -126,7 +73,7 @@ ControlsComponent::ControlsComponent()
     {
         if (on_musical_time_changed)
             on_musical_time_changed(m_musical_time_toggle.getToggleState());
-        refresh_musical_hop_delay_visibility();
+        refresh_click_track_control_enabled_state();
     };
     addAndMakeVisible(m_musical_time_toggle);
 
@@ -182,7 +129,7 @@ ControlsComponent::ControlsComponent()
     m_hop_label.setText("Hop (s):", juce::dontSendNotification);
     addAndMakeVisible(m_hop_label);
 
-    m_hop_slider.setRange(0.5, 15.0, 0.1);
+    m_hop_slider.setRange(k_hop_min_seconds, k_hop_max_seconds, k_hop_step_seconds);
     m_hop_slider.setValue(6.0);
     m_hop_slider.setTextBoxStyle(juce::Slider::TextBoxRight, false, 50, 20);
     m_hop_slider.onValueChange = [this]()
@@ -192,23 +139,11 @@ ControlsComponent::ControlsComponent()
     };
     addAndMakeVisible(m_hop_slider);
 
-    m_hop_bars_combo.addItem("Hop: 1/2 bar", k_hop_bar_combo_id_half);
-    m_hop_bars_combo.addItem("Hop: 1 bar", k_hop_bar_combo_id_one);
-    m_hop_bars_combo.addItem("Hop: 2 bars", k_hop_bar_combo_id_two);
-    m_hop_bars_combo.addItem("Hop: 3 bars", k_hop_bar_combo_id_three);
-    m_hop_bars_combo.addItem("Hop: 4 bars", k_hop_bar_combo_id_four);
-    m_hop_bars_combo.setSelectedId(k_hop_bar_combo_id_one, juce::dontSendNotification);
-    m_hop_bars_combo.onChange = [this]()
-    {
-        if (on_hop_bars_changed)
-            on_hop_bars_changed(hop_bars_for_combo_id(m_hop_bars_combo.getSelectedId()));
-    };
-    addAndMakeVisible(m_hop_bars_combo);
-
     m_schedule_delay_label.setText("Land delay (s):", juce::dontSendNotification);
     addAndMakeVisible(m_schedule_delay_label);
 
-    m_schedule_delay_slider.setRange(0.0, 30.0, 0.25);
+    m_schedule_delay_slider.setRange(
+        k_schedule_delay_min_seconds, k_schedule_delay_max_seconds, k_seconds_slider_step);
     m_schedule_delay_slider.setValue(0.0);
     m_schedule_delay_slider.setTextBoxStyle(juce::Slider::TextBoxRight, false, 52, 20);
     m_schedule_delay_slider.onValueChange = [this]()
@@ -217,19 +152,6 @@ ControlsComponent::ControlsComponent()
             on_schedule_delay_changed(static_cast<float>(m_schedule_delay_slider.getValue()));
     };
     addAndMakeVisible(m_schedule_delay_slider);
-
-    m_schedule_delay_bars_combo.addItem("Land: 0 bars", k_delay_bar_combo_id_zero);
-    m_schedule_delay_bars_combo.addItem("Land: 1 bar", k_delay_bar_combo_id_one);
-    m_schedule_delay_bars_combo.addItem("Land: 2 bars", k_delay_bar_combo_id_two);
-    m_schedule_delay_bars_combo.addItem("Land: 3 bars", k_delay_bar_combo_id_three);
-    m_schedule_delay_bars_combo.addItem("Land: 4 bars", k_delay_bar_combo_id_four);
-    m_schedule_delay_bars_combo.setSelectedId(k_delay_bar_combo_id_zero, juce::dontSendNotification);
-    m_schedule_delay_bars_combo.onChange = [this]()
-    {
-        if (on_schedule_delay_bars_changed)
-            on_schedule_delay_bars_changed(delay_bars_for_combo_id(m_schedule_delay_bars_combo.getSelectedId()));
-    };
-    addAndMakeVisible(m_schedule_delay_bars_combo);
 
     m_click_track_toggle.onClick = [this]()
     {
@@ -265,21 +187,22 @@ ControlsComponent::ControlsComponent()
     addAndMakeVisible(m_keep_ratio_slider);
 
     // Future-visibility slider: signed offset for tf_inpaint_mask only (sax visibility).
-    // Slider is in seconds, internally converted to latent frames via downsampling_ratio /
-    // sample_rate (default constants give ~46 ms per frame). Range is wider than what is in
-    // distribution; the C++ pipeline clamps tf_keep_frames to [0, T]. We disallow positive
-    // lookahead (slider max = 0) because the shipped checkpoint trained only on
-    // future_visibility in [-4, 0] (see base-fused-inp-add.json).
-    m_future_visibility_label.setText("Lookahead:", juce::dontSendNotification);
+    // Slider is in seconds, internally converted to latent frames via sample_rate /
+    // downsampling_ratio from the loaded manifest (~46 ms per frame for the shipped model).
+    // Range is wider than what is in distribution; the C++ pipeline clamps tf_keep_frames to
+    // [0, T]. We disallow positive lookahead (slider max = 0) because the shipped checkpoint
+    // trained only on future_visibility in [-4, 0] (see base-fused-inp-add.json).
+    m_future_visibility_label.setText("Lookahead (s):", juce::dontSendNotification);
     addAndMakeVisible(m_future_visibility_label);
 
-    m_future_visibility_slider.setRange(-2.0, 0.0, 0.05); // seconds; UI cap, real clamp is in pipeline
+    m_future_visibility_slider.setRange(
+        k_lookahead_min_seconds, k_lookahead_max_seconds, k_seconds_slider_step);
     m_future_visibility_slider.setValue(0.0);
     m_future_visibility_slider.setTextBoxStyle(juce::Slider::TextBoxRight, false, 90, 20);
-    // Display "<seconds>s (<frames> fr)". One frame = 2048/44100 s ~ 46 ms.
-    m_future_visibility_slider.textFromValueFunction = [](double sec) -> juce::String
+    // Display "<seconds>s (<frames> fr)".
+    m_future_visibility_slider.textFromValueFunction = [this](double sec) -> juce::String
     {
-        const int frames = static_cast<int>(std::lround(sec * (44100.0 / 2048.0)));
+        const int frames = static_cast<int>(std::lround(sec * lookahead_frames_per_second()));
         return juce::String(sec, 2) + "s (" + juce::String(frames) + " fr)";
     };
     m_future_visibility_slider.valueFromTextFunction = [](const juce::String& text) -> double
@@ -293,7 +216,7 @@ ControlsComponent::ControlsComponent()
         if (on_future_visibility_changed)
         {
             const double sec = m_future_visibility_slider.getValue();
-            const int frames = static_cast<int>(std::lround(sec * (44100.0 / 2048.0)));
+            const int frames = static_cast<int>(std::lround(sec * lookahead_frames_per_second()));
             on_future_visibility_changed(frames);
         }
     };
@@ -382,27 +305,28 @@ ControlsComponent::ControlsComponent()
     };
     addAndMakeVisible(m_generation_toggle);
 
-    refresh_musical_hop_delay_visibility();
+    refresh_click_track_control_enabled_state();
 }
 
-void ControlsComponent::refresh_musical_hop_delay_visibility()
+double ControlsComponent::lookahead_frames_per_second() const
 {
-    const bool musical = m_musical_time_toggle.getToggleState();
-    m_hop_slider.setVisible(!musical);
-    m_hop_bars_combo.setVisible(musical);
-    m_schedule_delay_slider.setVisible(!musical);
-    m_schedule_delay_bars_combo.setVisible(musical);
-    if (musical)
-    {
-        m_hop_label.setText("Hop (bars):", juce::dontSendNotification);
-        m_schedule_delay_label.setText("Land delay (bars):", juce::dontSendNotification);
-    }
-    else
-    {
-        m_hop_label.setText("Hop (s):", juce::dontSendNotification);
-        m_schedule_delay_label.setText("Land delay (s):", juce::dontSendNotification);
-    }
-    refresh_click_track_control_enabled_state();
+    jassert(m_model_constants.sample_rate > 0);
+    jassert(m_model_constants.downsampling_ratio > 0);
+    return static_cast<double>(m_model_constants.sample_rate)
+           / static_cast<double>(m_model_constants.downsampling_ratio);
+}
+
+void ControlsComponent::set_model_constants(const ModelConstants& constants)
+{
+    jassert(constants.sample_rate > 0);
+    jassert(constants.downsampling_ratio > 0);
+
+    m_model_constants = constants;
+    m_future_visibility_slider.updateText();
+    DBG("ControlsComponent: lookahead constants sample_rate="
+        + juce::String(constants.sample_rate)
+        + " downsampling_ratio=" + juce::String(constants.downsampling_ratio)
+        + " frames_per_s=" + juce::String(lookahead_frames_per_second(), 3));
 }
 
 void ControlsComponent::refresh_click_track_control_enabled_state()
@@ -422,18 +346,6 @@ void ControlsComponent::sync_click_track_from_processor(const StreamGenProcessor
         static_cast<double>(processor.click_track_volume.load(std::memory_order_relaxed)),
         juce::dontSendNotification);
     refresh_click_track_control_enabled_state();
-}
-
-void ControlsComponent::set_hop_bars_combo_from_value(float hop_bars)
-{
-    const int id = combo_id_for_hop_bars(hop_bars);
-    m_hop_bars_combo.setSelectedId(id, juce::dontSendNotification);
-}
-
-void ControlsComponent::set_schedule_delay_bars_combo_from_value(float delay_bars)
-{
-    const int id = combo_id_for_delay_bars(delay_bars);
-    m_schedule_delay_bars_combo.setSelectedId(id, juce::dontSendNotification);
 }
 
 void ControlsComponent::paint(juce::Graphics& g)
@@ -470,7 +382,7 @@ void ControlsComponent::sync_time_mode_from_scheduler(const GenerationScheduler&
     m_loop_last_gen_toggle.setToggleState(loop_last_generation_enabled, juce::dontSendNotification);
 
     sync_hop_delay_controls_from_scheduler(sched);
-    refresh_musical_hop_delay_visibility();
+    refresh_click_track_control_enabled_state();
 }
 
 void ControlsComponent::set_loop_last_generation_toggle(bool on, juce::NotificationType notification)
@@ -480,22 +392,11 @@ void ControlsComponent::set_loop_last_generation_toggle(bool on, juce::Notificat
 
 void ControlsComponent::sync_hop_delay_controls_from_scheduler(const GenerationScheduler& sched)
 {
-    const bool musical = sched.musical_time_enabled.load(std::memory_order_relaxed);
-    if (musical)
-    {
-        set_hop_bars_combo_from_value(sched.hop_bars.load(std::memory_order_relaxed));
-        set_schedule_delay_bars_combo_from_value(sched.schedule_delay_bars.load(std::memory_order_relaxed));
-    }
-    else
-    {
-        m_hop_slider.setRange(0.5, 15.0, 0.1);
-        m_hop_slider.setValue(static_cast<double>(sched.hop_seconds.load(std::memory_order_relaxed)),
-                              juce::dontSendNotification);
-        m_schedule_delay_slider.setRange(0.0, 30.0, 0.25);
-        m_schedule_delay_slider.setValue(
-            static_cast<double>(sched.schedule_delay_seconds.load(std::memory_order_relaxed)),
-            juce::dontSendNotification);
-    }
+    m_hop_slider.setValue(static_cast<double>(sched.hop_seconds.load(std::memory_order_relaxed)),
+                          juce::dontSendNotification);
+    m_schedule_delay_slider.setValue(
+        static_cast<double>(sched.schedule_delay_seconds.load(std::memory_order_relaxed)),
+        juce::dontSendNotification);
 }
 
 int ControlsComponent::time_sig_combo_index_for(int numerator, int denominator)
@@ -539,6 +440,7 @@ void ControlsComponent::layout_musical_rows(juce::Rectangle<int> inner)
     const int q_lbl = 56;
     const int q_cb = 96;
     const int hop_lbl = 96;
+    const int delay_lbl = 112;
 
     auto row = inner.removeFromTop(row_h);
     m_musical_time_toggle.setBounds(row.removeFromLeft(musical_toggle_w));
@@ -555,14 +457,10 @@ void ControlsComponent::layout_musical_rows(juce::Rectangle<int> inner)
     inner.removeFromTop(spacing);
     row = inner.removeFromTop(row_h);
     m_hop_label.setBounds(row.removeFromLeft(hop_lbl));
-    const auto hop_val_bounds = row.removeFromLeft(juce::jmax(160, row.getWidth() / 2 - 60));
-    m_hop_slider.setBounds(hop_val_bounds);
-    m_hop_bars_combo.setBounds(hop_val_bounds);
+    m_hop_slider.setBounds(row.removeFromLeft(juce::jmax(160, row.getWidth() / 2 - 60)));
     row.removeFromLeft(spacing);
-    m_schedule_delay_label.setBounds(row.removeFromLeft(112));
-    const auto delay_val_bounds = row;
-    m_schedule_delay_slider.setBounds(delay_val_bounds);
-    m_schedule_delay_bars_combo.setBounds(delay_val_bounds);
+    m_schedule_delay_label.setBounds(row.removeFromLeft(delay_lbl));
+    m_schedule_delay_slider.setBounds(row);
 
     inner.removeFromTop(spacing);
     row = inner.removeFromTop(row_h);
@@ -576,7 +474,7 @@ void ControlsComponent::layout_inference_rows(juce::Rectangle<int> inner)
 {
     const int row_h = 26;
     const int spacing = 4;
-    const int lbl = 80;
+    const int lbl = 92; // widest label in this group is "Lookahead (s):"
 
     auto row1 = inner.removeFromTop(row_h);
     auto left = row1.removeFromLeft(row1.getWidth() / 2 - spacing / 2);

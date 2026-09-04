@@ -66,23 +66,12 @@ StreamGenComponent::StreamGenComponent(
         m_processor.scheduler().hop_seconds.store(val, std::memory_order_relaxed);
     };
 
-    m_controls.on_hop_bars_changed = [this](float bars)
-    {
-        auto& sched = m_processor.scheduler();
-        sched.hop_bars.store(bars, std::memory_order_relaxed);
-        const int bpb = juce::jmax(1, sched.time_sig_numerator.load(std::memory_order_relaxed));
-        sched.hop_beats.store(bars * static_cast<float>(bpb), std::memory_order_relaxed);
-    };
-
     m_controls.on_keep_ratio_changed = [this](float val)
     {
         auto& sched = m_processor.scheduler();
         sched.keep_ratio.store(val, std::memory_order_relaxed);
-        if (!sched.musical_time_enabled.load(std::memory_order_relaxed))
-        {
-            sched.sync_hop_seconds_to_keep_ratio();
-            m_controls.sync_hop_delay_controls_from_scheduler(sched);
-        }
+        sched.sync_hop_seconds_to_keep_ratio();
+        m_controls.sync_hop_delay_controls_from_scheduler(sched);
     };
 
     m_controls.on_future_visibility_changed = [this](int frames)
@@ -103,14 +92,6 @@ StreamGenComponent::StreamGenComponent(
     m_controls.on_schedule_delay_changed = [this](float val)
     {
         m_processor.scheduler().schedule_delay_seconds.store(val, std::memory_order_relaxed);
-    };
-
-    m_controls.on_schedule_delay_bars_changed = [this](float bars)
-    {
-        auto& sched = m_processor.scheduler();
-        sched.schedule_delay_bars.store(bars, std::memory_order_relaxed);
-        const int bpb = juce::jmax(1, sched.time_sig_numerator.load(std::memory_order_relaxed));
-        sched.schedule_delay_beats.store(bars * static_cast<float>(bpb), std::memory_order_relaxed);
     };
 
     m_controls.on_musical_time_changed = [this](bool musical)
@@ -138,11 +119,6 @@ StreamGenComponent::StreamGenComponent(
         auto& sched = m_processor.scheduler();
         sched.time_sig_numerator.store(n, std::memory_order_relaxed);
         sched.time_sig_denominator.store(d, std::memory_order_relaxed);
-        const int bpb = juce::jmax(1, n);
-        const float hb = sched.hop_bars.load(std::memory_order_relaxed);
-        sched.hop_beats.store(hb * static_cast<float>(bpb), std::memory_order_relaxed);
-        const float db = sched.schedule_delay_bars.load(std::memory_order_relaxed);
-        sched.schedule_delay_beats.store(db * static_cast<float>(bpb), std::memory_order_relaxed);
     };
 
     m_controls.on_loop_last_generation_changed = [this](bool enabled)
@@ -238,6 +214,10 @@ void StreamGenComponent::load_pipeline(
         reattach_audio_callback_after_pipeline_load();
         return;
     }
+
+    // The worker's load_pipeline() calls m_processor.configure(), so the manifest constants are
+    // live here. The Lookahead slider needs them to convert seconds <-> latent frames.
+    m_controls.set_model_constants(m_processor.constants());
 
     // While the callback is detached, zero playhead/rings/timeline so the first block sees abs=0.
     // Warmup audio uses absolute_sample_pos % loop; this avoids a stale playhead after reload.
@@ -587,11 +567,6 @@ void StreamGenComponent::apply_default_musical_grid_preset()
     sched.time_sig_denominator.store(4, std::memory_order_relaxed);
     if (sched.quantize_launch_beats.load(std::memory_order_relaxed) == 0)
         sched.quantize_launch_beats.store(4, std::memory_order_relaxed);
-    const int bpb = juce::jmax(1, sched.time_sig_numerator.load(std::memory_order_relaxed));
-    const float hb = sched.hop_bars.load(std::memory_order_relaxed);
-    sched.hop_beats.store(hb * static_cast<float>(bpb), std::memory_order_relaxed);
-    const float db = sched.schedule_delay_bars.load(std::memory_order_relaxed);
-    sched.schedule_delay_beats.store(db * static_cast<float>(bpb), std::memory_order_relaxed);
     m_controls.sync_time_mode_from_scheduler(
         sched,
         m_processor.loop_last_generation.load(std::memory_order_relaxed));

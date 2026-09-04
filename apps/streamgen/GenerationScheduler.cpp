@@ -85,26 +85,14 @@ void GenerationScheduler::advance(int num_samples)
     const bool musical = musical_time_enabled.load(std::memory_order_relaxed);
     float bpm_val = clamp_bpm(bpm.load(std::memory_order_relaxed));
 
+    // Hop is always wall-clock seconds. `musical` below only gates launch quantization.
     int64_t hop_samples = 0;
     if (gen_on)
     {
-        if (musical)
-        {
-            float hb_bar = hop_bars.load(std::memory_order_relaxed);
-            if (hb_bar < 0.25f)
-                hb_bar = 0.25f;
-            const int bpb = time_sig_numerator.load(std::memory_order_relaxed);
-            const int bpb_cl = juce::jmax(1, bpb);
-            const double hop_qn_beats = static_cast<double>(hb_bar) * static_cast<double>(bpb_cl);
-            hop_samples = beats_to_samples(hop_qn_beats, rate, static_cast<double>(bpm_val));
-        }
-        else
-        {
-            hop_samples = seconds_to_samples(
-                static_cast<double>(hop_seconds.load(std::memory_order_relaxed)),
-                rate
-            );
-        }
+        hop_samples = seconds_to_samples(
+            static_cast<double>(hop_seconds.load(std::memory_order_relaxed)),
+            rate
+        );
     }
 
     if (log_this && gen_on)
@@ -199,24 +187,11 @@ void GenerationScheduler::enqueue_job(int64_t keep_end_sample)
     const bool musical = musical_time_enabled.load(std::memory_order_relaxed);
     float bpm_val = clamp_bpm(bpm.load(std::memory_order_relaxed));
 
-    int64_t output_delay_smpl = 0;
-    if (musical)
-    {
-        float d_bar = schedule_delay_bars.load(std::memory_order_relaxed);
-        if (d_bar < 0.0f)
-            d_bar = 0.0f;
-        const int bpb = time_sig_numerator.load(std::memory_order_relaxed);
-        const int bpb_cl = juce::jmax(1, bpb);
-        const double delay_qn_beats = static_cast<double>(d_bar) * static_cast<double>(bpb_cl);
-        output_delay_smpl = beats_to_samples(delay_qn_beats, rate, static_cast<double>(bpm_val));
-    }
-    else
-    {
-        float delay_sec = schedule_delay_seconds.load(std::memory_order_relaxed);
-        if (delay_sec < 0.0f)
-            delay_sec = 0.0f;
-        output_delay_smpl = seconds_to_samples(static_cast<double>(delay_sec), rate);
-    }
+    // Land delay is always wall-clock seconds: BPM-independent and not beat-aligned.
+    float delay_sec = schedule_delay_seconds.load(std::memory_order_relaxed);
+    if (delay_sec < 0.0f)
+        delay_sec = 0.0f;
+    const int64_t output_delay_smpl = seconds_to_samples(static_cast<double>(delay_sec), rate);
 
     GenerationJob job;
     job.job_id = m_next_job_id.fetch_add(1, std::memory_order_relaxed);
