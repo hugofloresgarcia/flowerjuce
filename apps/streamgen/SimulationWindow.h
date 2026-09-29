@@ -7,7 +7,8 @@
 
 namespace streamgen {
 
-/// Pop-up window for loading and playing a streamgen_audio simulation WAV (Python `streamgen_audio` source).
+/// Pop-up window for loading and playing a streamgen_audio simulation WAV (Python `streamgen_audio` source),
+/// with an optional percussion WAV that plays into the **percussion** ring on the same transport.
 ///
 /// Streams the loaded audio into the **streamgen_audio** ring at real-time rate,
 /// replacing live mic input. Provides transport controls and speed multiplier.
@@ -28,11 +29,14 @@ public:
 private:
     void timerCallback() override;
     void load_file();
+    void load_percussion_file();
     void update_transport_state();
 
     StreamGenProcessor& m_processor;
 
-    juce::TextButton m_load_button{"Load WAV..."};
+    juce::TextButton m_load_button{"Load sax WAV..."};
+    juce::TextButton m_load_percussion_button{"Load perc WAV..."};
+    juce::Label m_percussion_file_label;
     juce::TextButton m_play_button{"Play"};
     juce::TextButton m_pause_button{"Pause"};
     juce::TextButton m_stop_button{"Stop"};
@@ -60,7 +64,7 @@ public:
     {
         setContentOwned(new SimulationPanel(processor), true);
         setResizable(true, false);
-        centreWithSize(420, 300);
+        centreWithSize(420, 330);
         setUsingNativeTitleBar(true);
     }
 

@@ -40,7 +40,8 @@ juce::File resolve_manifest_file(const std::string& manifest_arg)
 
 bool is_macos_platform()
 {
-    return juce::SystemStats::getOperatingSystemType() == juce::SystemStats::MacOSX;
+    // getOperatingSystemType() returns a versioned enum (e.g. MacOS_15); MacOSX is the family mask bit.
+    return (juce::SystemStats::getOperatingSystemType() & juce::SystemStats::MacOSX) != 0;
 }
 
 /// initialise() can leave input/output channel bitmasks empty on some devices; the callback
@@ -150,8 +151,10 @@ public:
         ModelConstants defaults;
         m_processor->configure(defaults);
 
-        m_device_manager.initialise(1, 2, nullptr, true);
-        ensure_audio_channel_masks(m_device_manager, 1, 2);
+        // Two inputs: sax (streamgen_audio) and live percussion. Devices with one input still work;
+        // the percussion ring then receives zeros.
+        m_device_manager.initialise(2, 2, nullptr, true);
+        ensure_audio_channel_masks(m_device_manager, 2, 2);
         streamgen_log("StreamGen initialise: addAudioCallback (default device will open)");
         m_device_manager.addAudioCallback(m_processor.get());
         if (auto* dev = m_device_manager.getCurrentAudioDevice())

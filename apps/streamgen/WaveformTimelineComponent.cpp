@@ -482,6 +482,16 @@ void WaveformTimelineComponent::paint(juce::Graphics& g)
                     draw_tf_keep_boundary_ticks(g, x_tf, wf_top, wf_h, tf_accent);
                 }
             }
+            else if (m_timeline_role == TimelineWaveRole::Percussion)
+            {
+                if (input_hi > input_lo)
+                {
+                    g.setColour(fill);
+                    g.fillRect(input_lo, wf_top, input_hi - input_lo, band);
+                    draw_region_tag(g, input_lo + 4.0f, wf_top + 2.0f, "[input]", terminal.withAlpha(0.95f), tag_backdrop);
+                }
+                draw_keep_boundary_ticks(g, x_boundary_ke, wf_top, wf_h, edge);
+            }
             else
             {
                 if (input_hi > input_lo)
@@ -506,7 +516,7 @@ void WaveformTimelineComponent::paint(juce::Graphics& g)
             }
 
             juce::String lbl = "#" + juce::String(rec.job_id);
-            if (m_timeline_role == TimelineWaveRole::StreamgenAudio)
+            if (m_timeline_role != TimelineWaveRole::DrumsOutput)
                 lbl += " @" + format_clock_ms(rec.scheduled_system_ms);
             else if (rec.has_completed && rec.gen_samples > 0)
             {

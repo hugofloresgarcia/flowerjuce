@@ -102,6 +102,49 @@ inline int64_t warmup_timeline_for_session_end_align(
     return session_timeline_sample + static_cast<int64_t>(std::llround(shift));
 }
 
+/// Decode an audio file to mono float at its native rate (stereo is averaged; extra channels ignored).
+///
+/// Args:
+///     format_manager: Manager with basic formats registered.
+///     file: Audio file to read.
+///     out_mono: Receives `lengthInSamples` mono samples.
+///     out_native_hz: Receives the file rate clamped to [8000, 384000] (44100 when the header has none).
+///
+/// Returns:
+///     false when JUCE cannot create a reader for `file`.
+bool read_audio_file_mono(
+    juce::AudioFormatManager& format_manager,
+    const juce::File& file,
+    std::vector<float>& out_mono,
+    int& out_native_hz)
+{
+    std::unique_ptr<juce::AudioFormatReader> reader(format_manager.createReaderFor(file));
+    if (reader == nullptr)
+        return false;
+
+    const auto num_frames = static_cast<int>(reader->lengthInSamples);
+    juce::AudioBuffer<float> buffer(static_cast<int>(reader->numChannels), num_frames);
+    reader->read(&buffer, 0, num_frames, 0, true, true);
+
+    out_mono.assign(static_cast<size_t>(num_frames), 0.0f);
+    if (reader->numChannels == 1)
+    {
+        std::memcpy(out_mono.data(), buffer.getReadPointer(0), static_cast<size_t>(num_frames) * sizeof(float));
+    }
+    else
+    {
+        const float* left = buffer.getReadPointer(0);
+        const float* right = buffer.getReadPointer(1);
+        for (int i = 0; i < num_frames; ++i)
+            out_mono[static_cast<size_t>(i)] = (left[i] + right[i]) * 0.5f;
+    }
+
+    out_native_hz = reader->sampleRate > 0.0
+        ? juce::jlimit(8000, 384000, static_cast<int>(std::lround(reader->sampleRate)))
+        : 44100;
+    return true;
+}
+
 /// Resample stereo row-major (L block, R block), `num_samples` frames at playback_hz, to model_hz.
 /// Output length stays `num_samples`; same wall-time span as the playback window mapped to model sample times.
 void resample_row_major_playback_window_to_model_rate(
@@ -160,6 +203,7 @@ void StreamGenProcessor::rebuild_ring_buffers(int ring_sample_rate)
         return;
     m_ring_buffer_size = ring_sample_rate * RING_BUFFER_SECONDS;
     m_streamgen_audio_ring.assign(static_cast<size_t>(m_ring_buffer_size) * NUM_CHANNELS, 0.0f);
+    m_percussion_ring.assign(static_cast<size_t>(m_ring_buffer_size), 0.0f);
     m_drums_output_ring.assign(static_cast<size_t>(m_ring_buffer_size) * NUM_CHANNELS, 0.0f);
     m_drums_monitor_ring.assign(static_cast<size_t>(m_ring_buffer_size) * NUM_CHANNELS, 0.0f);
     m_drums_origin_ring.assign(static_cast<size_t>(m_ring_buffer_size), k_drums_origin_none);
@@ -179,6 +223,7 @@ void StreamGenProcessor::reset_timeline_and_transport()
     if (m_ring_buffer_size > 0)
     {
         std::fill(m_streamgen_audio_ring.begin(), m_streamgen_audio_ring.end(), 0.0f);
+        std::fill(m_percussion_ring.begin(), m_percussion_ring.end(), 0.0f);
         std::fill(m_drums_output_ring.begin(), m_drums_output_ring.end(), 0.0f);
         std::fill(m_drums_monitor_ring.begin(), m_drums_monitor_ring.end(), 0.0f);
         std::fill(m_drums_origin_ring.begin(), m_drums_origin_ring.end(), k_drums_origin_none);
@@ -261,6 +306,8 @@ void StreamGenProcessor::audioDeviceAboutToStart(juce::AudioIODevice* device)
         const size_t cap = static_cast<size_t>(juce::jmax(1024, blocksz));
         if (m_sim_callback_scratch.size() < cap)
             m_sim_callback_scratch.assign(cap, 0.0f);
+        if (m_sim_percussion_callback_scratch.size() < cap)
+            m_sim_percussion_callback_scratch.assign(cap, 0.0f);
     }
     DBG("StreamGenProcessor: audio device starting, sample_rate=" + juce::String(m_current_sample_rate));
     juce::String io_name = device != nullptr ? device->getName() : juce::String("<null>");
@@ -291,9 +338,19 @@ void StreamGenProcessor::audioDeviceIOCallbackWithContext(
     juce::String drums_path = "pending";
 
     float streamgen_audio_g = streamgen_audio_gain.load(std::memory_order_relaxed);
+    const float percussion_g = percussion_gain.load(std::memory_order_relaxed);
     float drums_g = drums_gain.load(std::memory_order_relaxed);
+    const float drums_out_g = drums_muted.load(std::memory_order_relaxed) ? 0.0f : drums_g;
 
-    // --- Write streamgen_audio (Python) into ring ---
+    // Device input channels for the two live streams; an out-of-range index means silence in that ring.
+    const int sax_ch = sax_input_channel.load(std::memory_order_relaxed);
+    const int perc_ch = percussion_input_channel.load(std::memory_order_relaxed);
+    const float* live_sax = (input_data != nullptr && sax_ch >= 0 && sax_ch < num_input_channels)
+        ? input_data[sax_ch] : nullptr;
+    const float* live_perc = (input_data != nullptr && perc_ch >= 0 && perc_ch < num_input_channels)
+        ? input_data[perc_ch] : nullptr;
+
+    // --- Write streamgen_audio (Python) + percussion into their rings ---
     if (simulation_playing.load(std::memory_order_relaxed)
         && simulation_total_samples.load(std::memory_order_relaxed) > 0)
     {
@@ -316,6 +373,7 @@ void StreamGenProcessor::audioDeviceIOCallbackWithContext(
                 write_streamgen_audio_to_ring_at(zeros, chunk, pos_block_start + static_cast<int64_t>(written));
                 written += chunk;
             }
+            write_percussion_to_ring_at(nullptr, num_samples, pos_block_start);
             if (num_output_channels >= 2 && output_data != nullptr)
             {
                 std::memset(output_data[0], 0, static_cast<size_t>(num_samples) * sizeof(float));
@@ -339,7 +397,10 @@ void StreamGenProcessor::audioDeviceIOCallbackWithContext(
 
         if (static_cast<int>(m_sim_callback_scratch.size()) < num_samples)
             m_sim_callback_scratch.assign(static_cast<size_t>(num_samples), 0.0f);
+        if (static_cast<int>(m_sim_percussion_callback_scratch.size()) < num_samples)
+            m_sim_percussion_callback_scratch.assign(static_cast<size_t>(num_samples), 0.0f);
         float* sim_buf = m_sim_callback_scratch.data();
+        float* sim_perc_buf = m_sim_percussion_callback_scratch.data();
 
         const int dev_hz = effective_device_hz(m_current_sample_rate, m_constants.sample_rate);
         const double sim_hz = static_cast<double>(
@@ -350,10 +411,23 @@ void StreamGenProcessor::audioDeviceIOCallbackWithContext(
         const bool loop = simulation_looping.load(std::memory_order_relaxed);
         int64_t last_fi = 0;
 
+        // Percussion sim file follows the sax file transport: same wall-clock position, indexed in
+        // its own native frames. Without a percussion file the live percussion channel is used.
+        const int64_t perc_total_frames = static_cast<int64_t>(m_sim_percussion_audio.size());
+        const double perc_frames_per_sax_frame = perc_total_frames > 0
+            ? static_cast<double>(juce::jmax(1, m_sim_percussion_native_sample_rate_hz.load(std::memory_order_relaxed)))
+                / sim_hz
+            : 0.0;
+        if (perc_total_frames > 0)
+            in_path = "sim_file+sim_perc";
+        else if (live_perc != nullptr)
+            in_path = "sim_file+live_perc";
+
         for (int i = 0; i < num_samples; ++i)
         {
             const int64_t timeline_i = pos_block_start + static_cast<int64_t>(i);
-            double file_d = static_cast<double>(timeline_i) * ratio * sp + m_sim_file_phase;
+            const double sax_frame_unwrapped = static_cast<double>(timeline_i) * ratio * sp + m_sim_file_phase;
+            double file_d = sax_frame_unwrapped;
             float s = 0.0f;
 
             if (total_frames <= 0)
@@ -381,21 +455,38 @@ void StreamGenProcessor::audioDeviceIOCallbackWithContext(
             }
 
             sim_buf[i] = s;
+
+            float p = 0.0f;
+            if (perc_total_frames > 0)
+            {
+                double perc_d = sax_frame_unwrapped * perc_frames_per_sax_frame;
+                if (loop)
+                {
+                    perc_d = std::fmod(perc_d, static_cast<double>(perc_total_frames));
+                    if (perc_d < 0.0)
+                        perc_d += static_cast<double>(perc_total_frames);
+                }
+                if (perc_d >= 0.0 && perc_d < static_cast<double>(perc_total_frames))
+                    p = m_sim_percussion_audio[static_cast<size_t>(std::floor(perc_d))];
+            }
+            else if (live_perc != nullptr)
+            {
+                p = live_perc[i];
+            }
+            sim_perc_buf[i] = p;
         }
 
         simulation_position.store(last_fi, std::memory_order_relaxed);
         write_streamgen_audio_to_ring_at(sim_buf, num_samples, pos_block_start);
+        write_percussion_to_ring_at(sim_perc_buf, num_samples, pos_block_start);
     }
     else
     {
-        // Live mic input (mono channel 0)
-        const float* mono_input = (input_data != nullptr && num_input_channels > 0)
-            ? input_data[0] : nullptr;
-
-        if (mono_input != nullptr)
+        // Live input: sax on `sax_input_channel`, percussion on `percussion_input_channel`.
+        if (live_sax != nullptr)
         {
             in_path = "live_mic";
-            write_streamgen_audio_to_ring_at(mono_input, num_samples, pos_block_start);
+            write_streamgen_audio_to_ring_at(live_sax, num_samples, pos_block_start);
         }
         else
         {
@@ -409,6 +500,8 @@ void StreamGenProcessor::audioDeviceIOCallbackWithContext(
                 written += chunk;
             }
         }
+        in_path += live_perc != nullptr ? "+live_perc" : "+perc_zeros";
+        write_percussion_to_ring_at(live_perc, num_samples, pos_block_start);
     }
 
     // --- Read drums output from ring buffer ---
@@ -488,8 +581,8 @@ void StreamGenProcessor::audioDeviceIOCallbackWithContext(
                 m_drums_monitor_ring[mon_base + 1] = right;
                 m_drums_origin_ring[static_cast<size_t>(mon_idx)] = origin;
 
-                output_data[0][i] = left * drums_g;
-                output_data[1][i] = right * drums_g;
+                output_data[0][i] = left * drums_out_g;
+                output_data[1][i] = right * drums_out_g;
             }
         }
         else
@@ -512,8 +605,8 @@ void StreamGenProcessor::audioDeviceIOCallbackWithContext(
                 if (std::fabs(L) > k_drums_gen_amplitude_epsilon || std::fabs(R) > k_drums_gen_amplitude_epsilon)
                     origin = s.from_last_gen_hold ? k_drums_origin_hold : k_drums_origin_gen;
                 m_drums_origin_ring[static_cast<size_t>(mon_idx)] = origin;
-                output_data[0][i] = L * drums_g;
-                output_data[1][i] = R * drums_g;
+                output_data[0][i] = L * drums_out_g;
+                output_data[1][i] = R * drums_out_g;
             }
         }
 
@@ -531,6 +624,18 @@ void StreamGenProcessor::audioDeviceIOCallbackWithContext(
                     m_streamgen_audio_ring[static_cast<size_t>(ring_idx * NUM_CHANNELS)];
                 output_data[0][i] += streamgen_audio_sample * streamgen_audio_g;
                 output_data[1][i] += streamgen_audio_sample * streamgen_audio_g;
+            }
+        }
+
+        // Mix live percussion passthrough into output
+        if (percussion_g > 0.0f)
+        {
+            for (int i = 0; i < num_samples; ++i)
+            {
+                const int64_t ring_idx = absolute_to_ring_index(pos_block_start + static_cast<int64_t>(i));
+                const float percussion_sample = m_percussion_ring[static_cast<size_t>(ring_idx)];
+                output_data[0][i] += percussion_sample * percussion_g;
+                output_data[1][i] += percussion_sample * percussion_g;
             }
         }
 
@@ -562,7 +667,10 @@ void StreamGenProcessor::audioDeviceIOCallbackWithContext(
             + " | gen_en=" + juce::String(gen_en ? 1 : 0) + " sr_dev=" + juce::String(m_current_sample_rate)
             + " ring_frames=" + juce::String(m_ring_buffer_size)
             + " streamgen_audio_g=" + juce::String(streamgen_audio_g, 2)
-            + " drums_g=" + juce::String(drums_g, 2));
+            + " percussion_g=" + juce::String(percussion_g, 2)
+            + " drums_g=" + juce::String(drums_g, 2)
+            + (drums_out_g == drums_g ? juce::String() : juce::String(" drums_muted"))
+            + " sax_ch=" + juce::String(sax_ch) + " perc_ch=" + juce::String(perc_ch));
     }
 }
 
@@ -661,6 +769,23 @@ void StreamGenProcessor::write_streamgen_audio_to_ring_at(
 void StreamGenProcessor::write_streamgen_audio_to_ring(const float* mono_input, int num_samples)
 {
     write_streamgen_audio_to_ring_at(mono_input, num_samples, m_scheduler.absolute_sample_pos());
+}
+
+void StreamGenProcessor::feed_percussion_audio(const float* mono_input, int num_samples)
+{
+    write_percussion_to_ring_at(mono_input, num_samples, m_scheduler.absolute_sample_pos());
+}
+
+void StreamGenProcessor::write_percussion_to_ring_at(
+    const float* mono_input,
+    int num_samples,
+    int64_t abs_block_start)
+{
+    for (int i = 0; i < num_samples; ++i)
+    {
+        const int64_t ring_idx = absolute_to_ring_index(abs_block_start + static_cast<int64_t>(i));
+        m_percussion_ring[static_cast<size_t>(ring_idx)] = mono_input != nullptr ? mono_input[i] : 0.0f;
+    }
 }
 
 void StreamGenProcessor::read_drums_from_ring(float* left, float* right, int num_samples)
@@ -788,6 +913,17 @@ std::vector<float> StreamGenProcessor::snapshot_drums_output(int64_t window_star
         result[static_cast<size_t>(num_samples + i)] = m_drums_output_ring[base + 1];
     }
 
+    return result;
+}
+
+std::vector<float> StreamGenProcessor::snapshot_percussion_audio(int64_t window_start, int64_t num_samples)
+{
+    std::vector<float> result(static_cast<size_t>(num_samples), 0.0f);
+    for (int64_t i = 0; i < num_samples; ++i)
+    {
+        const int64_t ring_idx = absolute_to_ring_index(window_start + i);
+        result[static_cast<size_t>(i)] = m_percussion_ring[static_cast<size_t>(ring_idx)];
+    }
     return result;
 }
 
@@ -956,7 +1092,29 @@ void StreamGenProcessor::fill_recent_streamgen_audio_waveform_buckets(
     float* out_min,
     float* out_max)
 {
+    fill_recent_ring_waveform_buckets(
+        m_streamgen_audio_ring, NUM_CHANNELS, duration_samples, num_buckets, out_min, out_max);
+}
+
+void StreamGenProcessor::fill_recent_percussion_waveform_buckets(
+    int duration_samples,
+    int num_buckets,
+    float* out_min,
+    float* out_max)
+{
+    fill_recent_ring_waveform_buckets(m_percussion_ring, 1, duration_samples, num_buckets, out_min, out_max);
+}
+
+void StreamGenProcessor::fill_recent_ring_waveform_buckets(
+    const std::vector<float>& ring,
+    int stride,
+    int duration_samples,
+    int num_buckets,
+    float* out_min,
+    float* out_max)
+{
     assert(out_min != nullptr && out_max != nullptr);
+    assert(stride >= 1);
     if (duration_samples <= 0 || num_buckets <= 0)
         return;
 
@@ -990,7 +1148,7 @@ void StreamGenProcessor::fill_recent_streamgen_audio_waveform_buckets(
                 continue;
             }
             int64_t ring_idx = absolute_to_ring_index(sample_abs);
-            float v = m_streamgen_audio_ring[static_cast<size_t>(ring_idx * NUM_CHANNELS)];
+            float v = ring[static_cast<size_t>(ring_idx * stride)];
             if (v < out_min[b])
                 out_min[b] = v;
             if (v > out_max[b])
@@ -1182,33 +1340,14 @@ void StreamGenProcessor::fill_recent_drums_source_buckets(
 
 bool StreamGenProcessor::load_simulation_file(const juce::File& file)
 {
-    std::unique_ptr<juce::AudioFormatReader> reader(
-        m_format_manager.createReaderFor(file));
-
-    if (reader == nullptr)
+    std::vector<float> mono;
+    int wav_sr = 0;
+    if (!read_audio_file_mono(m_format_manager, file, mono, wav_sr))
     {
         DBG("StreamGenProcessor: failed to load simulation file: " + file.getFullPathName());
         return false;
     }
-
-    auto num_frames = static_cast<int64_t>(reader->lengthInSamples);
-    juce::AudioBuffer<float> buffer(static_cast<int>(reader->numChannels), static_cast<int>(num_frames));
-    reader->read(&buffer, 0, static_cast<int>(num_frames), 0, true, true);
-
-    // Convert to mono
-    std::vector<float> mono(static_cast<size_t>(num_frames));
-    if (reader->numChannels == 1)
-    {
-        std::memcpy(mono.data(), buffer.getReadPointer(0),
-                     static_cast<size_t>(num_frames) * sizeof(float));
-    }
-    else
-    {
-        const float* left = buffer.getReadPointer(0);
-        const float* right = buffer.getReadPointer(1);
-        for (int64_t i = 0; i < num_frames; ++i)
-            mono[static_cast<size_t>(i)] = (left[i] + right[i]) * 0.5f;
-    }
+    const int64_t num_frames = static_cast<int64_t>(mono.size());
 
     {
         std::lock_guard<std::mutex> lock(m_sim_mutex);
@@ -1216,9 +1355,6 @@ bool StreamGenProcessor::load_simulation_file(const juce::File& file)
         m_sim_file_phase = 0.0;
     }
 
-    const int wav_sr = reader->sampleRate > 0.0
-        ? juce::jlimit(8000, 384000, static_cast<int>(std::lround(reader->sampleRate)))
-        : 44100;
     m_sim_native_sample_rate_hz.store(wav_sr, std::memory_order_relaxed);
 
     simulation_total_samples.store(num_frames, std::memory_order_relaxed);
@@ -1231,9 +1367,41 @@ bool StreamGenProcessor::load_simulation_file(const juce::File& file)
     return true;
 }
 
+bool StreamGenProcessor::load_simulation_percussion_file(const juce::File& file)
+{
+    std::vector<float> mono;
+    int wav_sr = 0;
+    if (!read_audio_file_mono(m_format_manager, file, mono, wav_sr))
+    {
+        DBG("StreamGenProcessor: failed to load percussion simulation file: " + file.getFullPathName());
+        return false;
+    }
+    const int64_t num_frames = static_cast<int64_t>(mono.size());
+
+    {
+        std::lock_guard<std::mutex> lock(m_sim_mutex);
+        m_sim_percussion_audio = std::move(mono);
+    }
+
+    m_sim_percussion_native_sample_rate_hz.store(wav_sr, std::memory_order_relaxed);
+    simulation_percussion_total_samples.store(num_frames, std::memory_order_relaxed);
+    m_simulation_percussion_display_name = file.getFileName();
+
+    DBG("StreamGenProcessor: loaded percussion simulation file: " + file.getFileName()
+        + " (" + juce::String(num_frames) + " frames @ " + juce::String(wav_sr) + " Hz)");
+    streamgen_log("load_simulation_percussion_file: " + file.getFileName()
+        + " frames=" + juce::String(num_frames) + " sr=" + juce::String(wav_sr));
+    return true;
+}
+
 juce::String StreamGenProcessor::simulation_display_name() const
 {
     return m_simulation_display_name;
+}
+
+juce::String StreamGenProcessor::simulation_percussion_display_name() const
+{
+    return m_simulation_percussion_display_name;
 }
 
 void StreamGenProcessor::clear_simulation()

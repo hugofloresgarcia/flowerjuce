@@ -21,8 +21,8 @@ namespace streamgen {
 
 /// Main dashboard component for StreamGen Live.
 ///
-/// Composes all sub-components: two scrolling waveforms (streamgen_audio + drums output),
-/// stage timing bars, generation status, controls, and mixer.
+/// Composes all sub-components: three scrolling waveforms (streamgen_audio, live percussion,
+/// drums output), stage timing bars, generation status, controls, and mixer.
 /// Runs a timer to poll the processor and update the UI.
 class StreamGenComponent : public juce::Component,
                            private juce::Timer {
@@ -91,6 +91,7 @@ private:
     std::unique_ptr<InferenceWorker> m_worker;
 
     WaveformTimelineComponent m_streamgen_audio_waveform;
+    WaveformTimelineComponent m_percussion_waveform;
     WaveformTimelineComponent m_drums_waveform;
     StageTimingComponent m_stage_timing;
     GenerationStatusComponent m_gen_status;
@@ -116,6 +117,8 @@ private:
     std::vector<JobTimelineRecord> m_timeline_paint_cache;
     std::vector<float> m_streamgen_audio_wave_min;
     std::vector<float> m_streamgen_audio_wave_max;
+    std::vector<float> m_percussion_wave_min;
+    std::vector<float> m_percussion_wave_max;
     std::vector<float> m_drums_wave_min;
     std::vector<float> m_drums_wave_max;
     std::vector<float> m_drums_wave_warm_min;

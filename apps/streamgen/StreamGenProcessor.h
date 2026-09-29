@@ -24,9 +24,10 @@ struct DrumsRingSample {
 
 /// Audio engine for StreamGen Live.
 ///
-/// Owns the dual ring buffers (**Python `streamgen_audio`** ring + generated **drums** ring),
-/// drives the audio callback, and provides thread-safe access for the inference worker to
-/// snapshot conditioning audio and write generated drums.
+/// Owns three ring buffers on one absolute-sample timeline: the **Python `streamgen_audio`** ring
+/// (sax), the live **percussion** ring (a second mono input, candidate `input_audio` context), and
+/// the generated **drums** ring. Drives the audio callback and provides thread-safe access for the
+/// inference worker to snapshot conditioning audio and write generated drums.
 ///
 /// Threading contract:
 ///   - Audio thread calls audio_device_callback()
@@ -97,6 +98,21 @@ public:
     /// Total length of the loaded simulation file (in samples).
     std::atomic<int64_t> simulation_total_samples{0};
 
+    /// Load a WAV file that plays into the **percussion** ring in lockstep with the simulation
+    /// sax file (same transport, position, speed and loop state). While a percussion simulation
+    /// file is loaded and the simulation is playing, it replaces the live percussion input channel.
+    /// Called from the UI thread. Returns true on success.
+    ///
+    /// Args:
+    ///     file: The WAV file to load (downmixed to mono).
+    bool load_simulation_percussion_file(const juce::File& file);
+
+    /// Short name of the loaded percussion simulation file (for UI). Empty if none.
+    juce::String simulation_percussion_display_name() const;
+
+    /// Total length of the loaded percussion simulation file (in its native-rate samples).
+    std::atomic<int64_t> simulation_percussion_total_samples{0};
+
     // --- Warmup audio ---
 
     /// Load a WAV file as the **drum** warmup stem (Python `input_audio`-style inpaint prefix).
@@ -142,6 +158,9 @@ public:
     /// Snapshot **generated drums** ring only (playback clock) — not Python `input_audio` (use `snapshot_input_audio_for_vae`).
     std::vector<float> snapshot_drums_output(int64_t window_start, int64_t num_samples);
 
+    /// Snapshot the live **percussion** ring (playback clock), mono, `num_samples` long.
+    std::vector<float> snapshot_percussion_audio(int64_t window_start, int64_t num_samples);
+
     /// **`streamgen_audio`** for VAE (`prepare_audio`-equivalent): playback-clock window from `snapshot_streamgen_audio`, then resampled to `m_constants.sample_rate`.
     std::vector<float> snapshot_streamgen_audio_for_vae(int64_t window_start, int64_t num_samples);
 
@@ -183,6 +202,9 @@ public:
     /// Same as fill_recent_streamgen_audio_waveform_buckets for the **drums output / monitor** ring (stereo downmixed to mono).
     void fill_recent_drums_output_waveform_buckets(int duration_samples, int num_buckets, float* out_min, float* out_max);
 
+    /// Same as fill_recent_streamgen_audio_waveform_buckets for the live **percussion** ring.
+    void fill_recent_percussion_waveform_buckets(int duration_samples, int num_buckets, float* out_min, float* out_max);
+
     /// Drums monitor split by source: warmup (1), model from ring (2), loop-hold snapshot (3); see m_drums_origin_ring.
     /// Arrays must hold num_buckets elements. Same visible window as fill_recent_drums_output_waveform_buckets.
     /// When gen_land_jobs is non-null and non-empty, samples with origin gen are bucketed only if they fall inside a
@@ -204,10 +226,23 @@ public:
 
     // --- Gain controls ---
     std::atomic<float> streamgen_audio_gain{0.0f};
+    /// Linear passthrough gain for the live percussion input on the main bus (0 = not monitored).
+    std::atomic<float> percussion_gain{0.0f};
     std::atomic<float> drums_gain{1.0f};
+    /// When true the drums bus (model output, loop hold and warmup) is silenced on the speakers.
+    /// Rings, monitor lane and loop-hold keep running so un-muting is seamless.
+    std::atomic<bool> drums_muted{false};
+
+    // --- Input routing (device input channel indices; out-of-range => that ring receives zeros) ---
+    std::atomic<int> sax_input_channel{0};
+    std::atomic<int> percussion_input_channel{1};
 
     /// Feed mono **`streamgen_audio`** into `m_streamgen_audio_ring` and advance the scheduler (CLI / tests).
     void feed_streamgen_audio(const float* mono_input, int num_samples);
+
+    /// Feed mono **percussion** into `m_percussion_ring` at the current scheduler position without
+    /// advancing it (CLI / tests). Call before `feed_streamgen_audio` for the same block.
+    void feed_percussion_audio(const float* mono_input, int num_samples);
 
     GenerationScheduler& scheduler() { return m_scheduler; }
     const ModelConstants& constants() const { return m_constants; }
@@ -239,6 +274,12 @@ private:
     void rebuild_ring_buffers(int ring_sample_rate);
     void write_streamgen_audio_to_ring(const float* mono_input, int num_samples);
     void write_streamgen_audio_to_ring_at(const float* mono_input, int num_samples, int64_t abs_block_start);
+    /// `mono_input == nullptr` writes zeros.
+    void write_percussion_to_ring_at(const float* mono_input, int num_samples, int64_t abs_block_start);
+    /// Min/max per bucket over a mono view of a ring (`stride` floats per frame, first float read).
+    void fill_recent_ring_waveform_buckets(
+        const std::vector<float>& ring, int stride, int duration_samples, int num_buckets,
+        float* out_min, float* out_max);
     void read_drums_from_ring(float* left, float* right, int num_samples);
     void output_ring_sample_at(int64_t absolute_sample, float& out_left, float& out_right) const;
     void commit_last_generation_snapshot(
@@ -260,6 +301,8 @@ private:
     int m_ring_buffer_size = 0; // in frames (one frame = NUM_CHANNELS samples)
     /// Python `streamgen_audio` timeline (stereo duplicated from mono).
     std::vector<float> m_streamgen_audio_ring;
+    /// Live percussion input timeline (mono, one float per frame). Audio thread writes; worker/UI read.
+    std::vector<float> m_percussion_ring;
     /// Generated **drums** bus (model output); warmup/monitor read via `fetch_drums_ring_sample`.
     std::vector<float> m_drums_output_ring;
     /// Last drum bus (pre-drums_gain) for UI waveform — audio thread only, never touched by worker.
@@ -273,6 +316,10 @@ private:
     double m_sim_file_phase = 0.0;
     std::atomic<int> m_sim_native_sample_rate_hz{44100};
     juce::String m_simulation_display_name;
+    /// Percussion simulation file (mono at its native rate), guarded by `m_sim_mutex`; follows the sax file transport.
+    std::vector<float> m_sim_percussion_audio;
+    std::atomic<int> m_sim_percussion_native_sample_rate_hz{44100};
+    juce::String m_simulation_percussion_display_name;
 
     // Warmup audio (stereo interleaved at native file rate)
     mutable std::mutex m_warm_mutex;
@@ -282,8 +329,9 @@ private:
     /// When > 0, warmup file index uses `session_timeline + (warm_playback_span - this)` (see setter).
     std::atomic<int64_t> m_streamgen_session_total_samples_for_warmup_end_align{0};
 
-    /// Grows in audioDeviceAboutToStart to max block size; simulation path fills then single ring write.
+    /// Grow in audioDeviceAboutToStart to max block size; simulation path fills then single ring write each.
     std::vector<float> m_sim_callback_scratch;
+    std::vector<float> m_sim_percussion_callback_scratch;
 
     /// Last completed generation (row-major stereo: [L...][R...]), for loop-hold when ring is silent.
     mutable std::mutex m_last_gen_mutex;

@@ -11,6 +11,17 @@ SimulationPanel::SimulationPanel(StreamGenProcessor& processor)
     m_load_button.onClick = [this]() { load_file(); };
     addAndMakeVisible(m_load_button);
 
+    LayerCakeLookAndFeel::setControlButtonType(m_load_percussion_button, LayerCakeLookAndFeel::ControlButtonType::Preset);
+    m_load_percussion_button.setTooltip("Percussion WAV played into the percussion ring alongside the sax file");
+    m_load_percussion_button.onClick = [this]() { load_percussion_file(); };
+    addAndMakeVisible(m_load_percussion_button);
+
+    m_percussion_file_label.setText("No percussion file (live input)", juce::dontSendNotification);
+    m_percussion_file_label.setColour(
+        juce::Label::textColourId,
+        getLookAndFeel().findColour(juce::Label::textColourId).withAlpha(0.55f));
+    addAndMakeVisible(m_percussion_file_label);
+
     LayerCakeLookAndFeel::setControlButtonType(m_play_button, LayerCakeLookAndFeel::ControlButtonType::Clock);
     m_play_button.onClick = [this]()
     {
@@ -91,7 +102,7 @@ SimulationPanel::SimulationPanel(StreamGenProcessor& processor)
     };
     addAndMakeVisible(m_position_slider);
 
-    setSize(420, 300);
+    setSize(420, 330);
     startTimerHz(15);
     update_transport_state();
 }
@@ -109,10 +120,18 @@ void SimulationPanel::resized()
     const int spacing = 4;
     const int button_width = 60;
 
+    const int load_button_width = 120;
+
     auto row = bounds.removeFromTop(row_height);
-    m_load_button.setBounds(row.removeFromLeft(100));
+    m_load_button.setBounds(row.removeFromLeft(load_button_width));
     row.removeFromLeft(spacing);
     m_file_label.setBounds(row);
+    bounds.removeFromTop(spacing);
+
+    row = bounds.removeFromTop(row_height);
+    m_load_percussion_button.setBounds(row.removeFromLeft(load_button_width));
+    row.removeFromLeft(spacing);
+    m_percussion_file_label.setBounds(row);
     bounds.removeFromTop(spacing);
 
     row = bounds.removeFromTop(row_height);
@@ -195,6 +214,27 @@ void SimulationPanel::load_file()
         });
 }
 
+void SimulationPanel::load_percussion_file()
+{
+    auto chooser = std::make_shared<juce::FileChooser>(
+        "Load Percussion Simulation WAV", juce::File(), "*.wav;*.aif;*.aiff;*.flac");
+
+    chooser->launchAsync(
+        juce::FileBrowserComponent::openMode | juce::FileBrowserComponent::canSelectFiles,
+        [this, chooser](const juce::FileChooser& fc)
+        {
+            auto result = fc.getResult();
+            if (result == juce::File())
+            {
+                DBG("SimulationPanel: percussion file chooser cancelled");
+                return;
+            }
+
+            if (m_processor.load_simulation_percussion_file(result))
+                m_percussion_file_label.setText(result.getFileName(), juce::dontSendNotification);
+        });
+}
+
 void SimulationPanel::sync_from_processor()
 {
     juce::String name = m_processor.simulation_display_name();
@@ -203,6 +243,9 @@ void SimulationPanel::sync_from_processor()
         m_loaded_filename = name;
         m_file_label.setText(m_loaded_filename, juce::dontSendNotification);
     }
+    const juce::String perc_name = m_processor.simulation_percussion_display_name();
+    if (perc_name.isNotEmpty())
+        m_percussion_file_label.setText(perc_name, juce::dontSendNotification);
     m_snap_bar_toggle.setToggleState(
         m_processor.simulation_snap_to_bar_on_play.load(std::memory_order_relaxed),
         juce::dontSendNotification);

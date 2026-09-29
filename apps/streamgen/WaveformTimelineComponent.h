@@ -9,9 +9,11 @@
 
 namespace streamgen {
 
-/// Which lane to draw for paired streamgen_audio / drums job coloring.
+/// Which lane to draw for paired streamgen_audio / percussion / drums job coloring.
 enum class TimelineWaveRole {
     StreamgenAudio,
+    /// Live percussion input: overlays show the drum-prefix `[input]` region only (no tf tick).
+    Percussion,
     DrumsOutput
 };
 

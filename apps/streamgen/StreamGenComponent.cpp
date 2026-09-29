@@ -48,8 +48,10 @@ StreamGenComponent::StreamGenComponent(
     addAndMakeVisible(m_title_label);
 
     m_streamgen_audio_waveform.set_label("STREAMGEN AUDIO");
+    m_percussion_waveform.set_label("LIVE PERCUSSION");
     m_drums_waveform.set_label("DRUMS OUTPUT");
     addAndMakeVisible(m_streamgen_audio_waveform);
+    addAndMakeVisible(m_percussion_waveform);
     addAndMakeVisible(m_drums_waveform);
     addAndMakeVisible(m_stage_timing);
     addAndMakeVisible(m_gen_status);
@@ -175,9 +177,20 @@ StreamGenComponent::StreamGenComponent(
         m_processor.streamgen_audio_gain.store(val, std::memory_order_relaxed);
     };
 
+    m_mixer.on_percussion_gain_changed = [this](float val)
+    {
+        m_processor.percussion_gain.store(val, std::memory_order_relaxed);
+    };
+
     m_mixer.on_drums_gain_changed = [this](float val)
     {
         m_processor.drums_gain.store(val, std::memory_order_relaxed);
+    };
+
+    m_mixer.on_drums_mute_changed = [this](bool muted)
+    {
+        m_processor.drums_muted.store(muted, std::memory_order_relaxed);
+        streamgen_log("UI: drums_muted=" + juce::String(muted ? "true" : "false"));
     };
 
     m_controls.set_warmup_audio_route_enabled(false);
@@ -403,8 +416,7 @@ void StreamGenComponent::resized()
     const int sidebar_width = 160;
     // Controls: full-width prompt, (musical | inference) grid row, full-width session.
     const int controls_height = 360;
-    const int waveform_min_height = 100;
-    const int mixer_width = 80;
+    const int waveform_min_height = 80;
 
     // Title bar
     m_title_label.setBounds(bounds.removeFromTop(title_height));
@@ -418,11 +430,12 @@ void StreamGenComponent::resized()
     m_gen_status.setBounds(sidebar.removeFromBottom(sidebar.getHeight() / 2));
     m_stage_timing.setBounds(sidebar);
 
-    // Main area: two waveforms stacked
+    // Main area: three waveform lanes stacked (sax, live percussion, drums)
     int available_height = bounds.getHeight();
-    int waveform_height = std::max(waveform_min_height, available_height / 2);
+    int waveform_height = std::max(waveform_min_height, available_height / 3);
 
     m_streamgen_audio_waveform.setBounds(bounds.removeFromTop(waveform_height));
+    m_percussion_waveform.setBounds(bounds.removeFromTop(waveform_height));
     m_drums_waveform.setBounds(bounds);
 }
 
@@ -454,9 +467,11 @@ void StreamGenComponent::timerCallback()
     int visible_samples = static_cast<int>(visible_seconds * static_cast<float>(sr));
 
     m_streamgen_audio_waveform.set_visible_duration(visible_seconds);
+    m_percussion_waveform.set_visible_duration(visible_seconds);
     m_drums_waveform.set_visible_duration(visible_seconds);
     const int downsampling_ratio = m_processor.constants().downsampling_ratio;
     m_streamgen_audio_waveform.set_downsampling_ratio(downsampling_ratio);
+    m_percussion_waveform.set_downsampling_ratio(downsampling_ratio);
     m_drums_waveform.set_downsampling_ratio(downsampling_ratio);
 
     auto& sched = sched_for_timer;
@@ -465,6 +480,7 @@ void StreamGenComponent::timerCallback()
     const int sig_n = sched.time_sig_numerator.load(std::memory_order_relaxed);
     const int sig_d = sched.time_sig_denominator.load(std::memory_order_relaxed);
     m_streamgen_audio_waveform.set_time_axis_for_paint(musical, bpm, sig_n, sig_d);
+    m_percussion_waveform.set_time_axis_for_paint(musical, bpm, sig_n, sig_d);
     m_drums_waveform.set_time_axis_for_paint(musical, bpm, sig_n, sig_d);
 
     const bool skip_timeline_tick = worker_busy && (ui_tick % 2 != 0);
@@ -488,6 +504,8 @@ void StreamGenComponent::timerCallback()
         const size_t w = static_cast<size_t>(wave_w);
         m_streamgen_audio_wave_min.resize(w);
         m_streamgen_audio_wave_max.resize(w);
+        m_percussion_wave_min.resize(w);
+        m_percussion_wave_max.resize(w);
         m_drums_wave_min.resize(w);
         m_drums_wave_max.resize(w);
         m_drums_wave_warm_min.resize(w);
@@ -508,6 +526,17 @@ void StreamGenComponent::timerCallback()
         sr,
         &m_timeline_paint_cache,
         TimelineWaveRole::StreamgenAudio);
+
+    m_processor.fill_recent_percussion_waveform_buckets(
+        visible_samples, wave_w, m_percussion_wave_min.data(), m_percussion_wave_max.data());
+    m_percussion_waveform.update(
+        m_percussion_wave_min.data(),
+        m_percussion_wave_max.data(),
+        wave_w,
+        abs_pos,
+        sr,
+        &m_timeline_paint_cache,
+        TimelineWaveRole::Percussion);
 
     m_processor.fill_recent_drums_output_waveform_buckets(
         visible_samples, wave_w, m_drums_wave_min.data(), m_drums_wave_max.data());
@@ -542,10 +571,13 @@ void StreamGenComponent::timerCallback()
         : juce::String("  cyan=model  magenta=loop hold");
 
     // Source tags
-    if (m_processor.simulation_playing.load(std::memory_order_relaxed))
-        m_streamgen_audio_waveform.set_source_tag("[SIM]");
+    const bool sim_playing = m_processor.simulation_playing.load(std::memory_order_relaxed);
+    m_streamgen_audio_waveform.set_source_tag(sim_playing ? "[SIM]" : "[LIVE]");
+    if (sim_playing && m_processor.simulation_percussion_total_samples.load(std::memory_order_relaxed) > 0)
+        m_percussion_waveform.set_source_tag("[SIM]");
     else
-        m_streamgen_audio_waveform.set_source_tag("[LIVE]");
+        m_percussion_waveform.set_source_tag(
+            "[LIVE ch " + juce::String(m_processor.percussion_input_channel.load(std::memory_order_relaxed)) + "]");
 
     const bool drums_hold = m_processor.drums_output_from_last_gen_hold.load(std::memory_order_relaxed);
     juce::String drums_tag;
@@ -619,7 +651,7 @@ void StreamGenComponent::timerCallback()
 void StreamGenComponent::show_audio_settings()
 {
     auto* selector = new juce::AudioDeviceSelectorComponent(
-        m_device_manager, 1, 1, 2, 2, false, false, true, true);
+        m_device_manager, 1, 2, 2, 2, false, false, true, true);
     selector->setSize(500, 400);
 
     juce::DialogWindow::LaunchOptions options;

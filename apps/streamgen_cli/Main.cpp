@@ -10,6 +10,8 @@
 /// Audio timeline (matches Python `generate_streamgen_inpaint`):
 ///   - `--input` is **`streamgen_audio`** (Python): decoded to mono, resampled to manifest
 ///     `sample_rate`, then fed into `m_streamgen_audio_ring`. In CLI one tick = one model-rate sample.
+///   - `--percussion` is the live **percussion** stream: decoded to mono, resampled to manifest
+///     `sample_rate`, zero-padded/truncated to `--input` length, fed into `m_percussion_ring` in lockstep.
 ///   - `--warmup-audio` seeds **`input_audio`** (Python drum stem) where the drums ring + hold are silent.
 ///     When warmup is loaded, its playback timeline is **end-aligned** with `--input`: the last session
 ///     sample reads the end of the warmup file (looping), so streaming conditions on “future” drums.
@@ -245,6 +247,7 @@ static void print_usage(const char* prog)
     std::cerr << "Usage: " << prog << " [options]\n"
               << "  --manifest FILE          Path to zenon_pipeline_manifest.json (REQUIRED)\n"
               << "  --input FILE             streamgen_audio WAV (Python streamgen_audio) (REQUIRED)\n"
+              << "  --percussion FILE        Live percussion WAV fed into the percussion ring alongside --input\n"
               << "  --warmup-audio FILE      Warmup-audio drums WAV\n"
               << "  --output FILE            Output drums WAV (default: output_streamgen.wav)\n"
               << "  --timing-json FILE       Write per-generation timing JSON\n"
@@ -268,6 +271,7 @@ int main(int argc, char* argv[])
 
     std::string manifest_path;
     std::string input_file;
+    std::string percussion_file;
     std::string warmup_audio_file;
     std::string output_file = "output_streamgen.wav";
     std::string timing_json_file;
@@ -290,6 +294,7 @@ int main(int argc, char* argv[])
         std::string arg = argv[i];
         if (arg == "--manifest" && i + 1 < argc) manifest_path = argv[++i];
         else if (arg == "--input" && i + 1 < argc) input_file = argv[++i];
+        else if (arg == "--percussion" && i + 1 < argc) percussion_file = argv[++i];
         else if (arg == "--warmup-audio" && i + 1 < argc) warmup_audio_file = argv[++i];
         else if (arg == "--output" && i + 1 < argc) output_file = argv[++i];
         else if (arg == "--timing-json" && i + 1 < argc) timing_json_file = argv[++i];
@@ -342,6 +347,21 @@ int main(int argc, char* argv[])
     double input_duration_s = static_cast<double>(total_input_samples)
         / static_cast<double>(model_sample_rate);
 
+    // --- Optional percussion stream: same clock as --input, padded/truncated to its length ---
+    std::vector<float> percussion_mono(static_cast<size_t>(total_input_samples), 0.0f);
+    if (!percussion_file.empty())
+    {
+        auto perc_native = load_wav_mono_native_rate(percussion_file, format_manager);
+        std::vector<float> perc_resampled = resample_mono_linear(
+            perc_native.first,
+            perc_native.second,
+            static_cast<double>(model_sample_rate));
+        const size_t copy_n = std::min(perc_resampled.size(), percussion_mono.size());
+        std::copy_n(perc_resampled.begin(), copy_n, percussion_mono.begin());
+        std::cout << "Percussion: " << percussion_file << " (" << perc_resampled.size()
+                  << " samples at model rate, " << copy_n << " used)" << std::endl;
+    }
+
     // --- Set up processor and worker ---
     streamgen::StreamGenProcessor processor;
     streamgen::InferenceWorker worker(processor);
@@ -390,6 +410,8 @@ int main(int argc, char* argv[])
     {
         int64_t remaining = total_input_samples - pos;
         int chunk = static_cast<int>(std::min(static_cast<int64_t>(BLOCK_SIZE), remaining));
+        // Percussion first: it writes at the current position without advancing the scheduler.
+        processor.feed_percussion_audio(&percussion_mono[static_cast<size_t>(pos)], chunk);
         processor.feed_streamgen_audio(&input_mono[static_cast<size_t>(pos)], chunk);
         pos += chunk;
 
