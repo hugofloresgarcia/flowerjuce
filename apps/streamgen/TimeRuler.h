@@ -56,6 +56,11 @@ struct GenerationJob {
     /// Positive lookahead is OOD for the current checkpoint and is clamped at 0 by the UI.
     int future_visibility_frames = 0;
 
+    /// Playback-clock frames of the kept prefix `[window_start, keep_end)` that came from the live
+    /// percussion ring rather than the model's own past. Filled by the worker when the job's
+    /// `input_audio` is snapshotted; 0 while the job is only scheduled.
+    int64_t live_context_samples = 0;
+
     /// Absolute sample where decoded generation begins on the timeline.
     int64_t output_start_sample() const { return keep_end_sample + output_delay_samples; }
 

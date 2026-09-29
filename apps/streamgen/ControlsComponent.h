@@ -40,6 +40,8 @@ public:
     /// Fires the index (into the list passed to `set_model_choices`) of the picked manifest.
     std::function<void(int)> on_model_changed;
     std::function<void(bool)> on_generation_enabled_changed;
+    /// Live percussion becomes the drum context (`input_audio`) for frames recorded while on.
+    std::function<void(bool)> on_percussion_context_changed;
     std::function<void(bool)> on_click_track_enabled_changed;
     std::function<void(float)> on_click_track_volume_changed;
 
@@ -146,6 +148,7 @@ private:
     juce::TextButton m_simulate_button{"Simulate..."};
     juce::TextButton m_audio_settings_button{"Audio Settings"};
     juce::TextButton m_reset_button{"Reset"};
+    juce::ToggleButton m_percussion_context_toggle{"Perc -> context"};
     /// Declared before `m_model_combo` so it is destroyed after the combo that points at it.
     ModelComboLookAndFeel m_model_combo_look_and_feel;
     juce::Label m_model_label;

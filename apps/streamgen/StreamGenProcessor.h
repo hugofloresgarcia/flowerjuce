@@ -165,14 +165,20 @@ public:
     std::vector<float> snapshot_streamgen_audio_for_vae(int64_t window_start, int64_t num_samples);
 
     /// **`input_audio`** for VAE (drum inpaint stem; Python `input_audio_tensor`): for timeline indices
-    /// in `[window_start, keep_end_sample)` only — ring + last-gen hold, else warmup when silent; samples
-    /// at `abs_sample >= keep_end_sample` are **zeros** (no future drum conditioning). Resampled to
-    /// `m_constants.sample_rate`. `keep_end_sample` is the same boundary as `GenerationJob::keep_end_sample`
+    /// in `[window_start, keep_end_sample)` only. Frames flagged **live** in `m_context_source_ring`
+    /// read the percussion ring (mono duplicated; live silence stays silence). Other frames read
+    /// ring + last-gen hold, else warmup when silent. Samples at `abs_sample >= keep_end_sample` are
+    /// **zeros** (no future drum conditioning). Resampled to `m_constants.sample_rate`.
+    /// `keep_end_sample` is the same boundary as `GenerationJob::keep_end_sample`
     /// (first sample of the generated suffix in playback time).
     std::vector<float> snapshot_input_audio_for_vae(
         int64_t window_start,
         int64_t num_samples,
         int64_t keep_end_sample);
+
+    /// Number of playback-clock frames in `[window_start, keep_end_sample)` flagged live
+    /// (i.e. taken from the percussion ring by `snapshot_input_audio_for_vae`).
+    int64_t count_live_context_samples(int64_t window_start, int64_t keep_end_sample) const;
 
     /// Write generated audio into the output ring buffer with overlap-add crossfade.
     /// Called from the worker thread.
@@ -204,6 +210,10 @@ public:
 
     /// Same as fill_recent_streamgen_audio_waveform_buckets for the live **percussion** ring.
     void fill_recent_percussion_waveform_buckets(int duration_samples, int num_buckets, float* out_min, float* out_max);
+
+    /// Per bucket, the fraction (0..1) of frames flagged live in `m_context_source_ring`, same visible
+    /// window as the waveform buckets (future frames count as 0). `out_live_fraction` holds `num_buckets`.
+    void fill_recent_live_context_buckets(int duration_samples, int num_buckets, float* out_live_fraction);
 
     /// Drums monitor split by source: warmup (1), model from ring (2), loop-hold snapshot (3); see m_drums_origin_ring.
     /// Arrays must hold num_buckets elements. Same visible window as fill_recent_drums_output_waveform_buckets.
@@ -237,11 +247,18 @@ public:
     std::atomic<int> sax_input_channel{0};
     std::atomic<int> percussion_input_channel{1};
 
+    /// Context source toggle (UI / CLI). Sampled once per audio block and recorded per timeline frame
+    /// in `m_context_source_ring`, so a job's drum prefix (`input_audio`) is assembled per region:
+    /// frames flagged **live** read the percussion ring, the rest read the model's own output
+    /// (ring -> loop hold -> warmup). Flipping mid-window splices inside the prefix.
+    std::atomic<bool> percussion_as_context{false};
+
     /// Feed mono **`streamgen_audio`** into `m_streamgen_audio_ring` and advance the scheduler (CLI / tests).
     void feed_streamgen_audio(const float* mono_input, int num_samples);
 
     /// Feed mono **percussion** into `m_percussion_ring` at the current scheduler position without
-    /// advancing it (CLI / tests). Call before `feed_streamgen_audio` for the same block.
+    /// advancing it, and record the current `percussion_as_context` flag for those frames (CLI / tests).
+    /// Call before `feed_streamgen_audio` for the same block.
     void feed_percussion_audio(const float* mono_input, int num_samples);
 
     GenerationScheduler& scheduler() { return m_scheduler; }
@@ -276,6 +293,8 @@ private:
     void write_streamgen_audio_to_ring_at(const float* mono_input, int num_samples, int64_t abs_block_start);
     /// `mono_input == nullptr` writes zeros.
     void write_percussion_to_ring_at(const float* mono_input, int num_samples, int64_t abs_block_start);
+    /// Record `live` (from `percussion_as_context`) for `num_samples` frames from `abs_block_start`.
+    void write_context_source_at(bool live, int num_samples, int64_t abs_block_start);
     /// Min/max per bucket over a mono view of a ring (`stride` floats per frame, first float read).
     void fill_recent_ring_waveform_buckets(
         const std::vector<float>& ring, int stride, int duration_samples, int num_buckets,
@@ -303,6 +322,8 @@ private:
     std::vector<float> m_streamgen_audio_ring;
     /// Live percussion input timeline (mono, one float per frame). Audio thread writes; worker/UI read.
     std::vector<float> m_percussion_ring;
+    /// Per frame: 0 = model's own past is the drum context, 1 = live percussion is. Audio thread writes.
+    std::vector<uint8_t> m_context_source_ring;
     /// Generated **drums** bus (model output); warmup/monitor read via `fetch_drums_ring_sample`.
     std::vector<float> m_drums_output_ring;
     /// Last drum bus (pre-drums_gain) for UI waveform — audio thread only, never touched by worker.

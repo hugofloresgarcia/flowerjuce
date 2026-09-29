@@ -12,6 +12,9 @@
 ///     `sample_rate`, then fed into `m_streamgen_audio_ring`. In CLI one tick = one model-rate sample.
 ///   - `--percussion` is the live **percussion** stream: decoded to mono, resampled to manifest
 ///     `sample_rate`, zero-padded/truncated to `--input` length, fed into `m_percussion_ring` in lockstep.
+///   - `--context-schedule A-B:live,C-D:self,...` (seconds on the `--input` timeline) sets
+///     `percussion_as_context` per block, so those regions of later kept prefixes read the percussion
+///     ring instead of the model's own output. Unlisted time is `self`.
 ///   - `--warmup-audio` seeds **`input_audio`** (Python drum stem) where the drums ring + hold are silent.
 ///     When warmup is loaded, its playback timeline is **end-aligned** with `--input`: the last session
 ///     sample reads the end of the warmup file (looping), so streaming conditions on “future” drums.
@@ -132,6 +135,46 @@ static std::pair<std::vector<float>, double> load_wav_mono_native_rate(
     return {std::move(mono), native_hz};
 }
 
+/// One `--context-schedule` span: `[start_s, end_s)` on the input timeline uses live percussion
+/// (`live == true`) or the model's own past (`live == false`) as drum context.
+struct ContextSpan {
+    double start_s = 0.0;
+    double end_s = 0.0;
+    bool live = false;
+};
+
+/// Parse `A-B:live,C-D:self,...` (seconds). Asserts on malformed input.
+///
+/// Args:
+///     text: The raw `--context-schedule` argument.
+///
+/// Returns:
+///     Spans in the order written.
+static std::vector<ContextSpan> parse_context_schedule(const std::string& text)
+{
+    std::vector<ContextSpan> spans;
+    juce::StringArray items = juce::StringArray::fromTokens(juce::String(text), ",", "");
+    for (const juce::String& raw : items)
+    {
+        const juce::String item = raw.trim();
+        if (item.isEmpty())
+            continue;
+        const int colon = item.lastIndexOfChar(':');
+        const int dash = item.indexOfChar('-');
+        assert(colon > 0 && dash > 0 && dash < colon
+               && "--context-schedule items must look like START-END:live|self");
+        ContextSpan span;
+        span.start_s = item.substring(0, dash).getDoubleValue();
+        span.end_s = item.substring(dash + 1, colon).getDoubleValue();
+        const juce::String mode = item.substring(colon + 1).trim().toLowerCase();
+        assert((mode == "live" || mode == "self") && "--context-schedule mode must be live or self");
+        span.live = mode == "live";
+        assert(span.end_s > span.start_s && "--context-schedule span END must be > START");
+        spans.push_back(span);
+    }
+    return spans;
+}
+
 /// Linearly resample mono audio from source_hz to target_hz (same clock the model expects).
 ///
 /// Args:
@@ -248,6 +291,8 @@ static void print_usage(const char* prog)
               << "  --manifest FILE          Path to zenon_pipeline_manifest.json (REQUIRED)\n"
               << "  --input FILE             streamgen_audio WAV (Python streamgen_audio) (REQUIRED)\n"
               << "  --percussion FILE        Live percussion WAV fed into the percussion ring alongside --input\n"
+              << "  --context-schedule SPEC  A-B:live,C-D:self,... seconds where percussion (live) or the\n"
+              << "                           model's own output (self) is the drum context (default: all self)\n"
               << "  --warmup-audio FILE      Warmup-audio drums WAV\n"
               << "  --output FILE            Output drums WAV (default: output_streamgen.wav)\n"
               << "  --timing-json FILE       Write per-generation timing JSON\n"
@@ -272,6 +317,7 @@ int main(int argc, char* argv[])
     std::string manifest_path;
     std::string input_file;
     std::string percussion_file;
+    std::string context_schedule;
     std::string warmup_audio_file;
     std::string output_file = "output_streamgen.wav";
     std::string timing_json_file;
@@ -295,6 +341,7 @@ int main(int argc, char* argv[])
         if (arg == "--manifest" && i + 1 < argc) manifest_path = argv[++i];
         else if (arg == "--input" && i + 1 < argc) input_file = argv[++i];
         else if (arg == "--percussion" && i + 1 < argc) percussion_file = argv[++i];
+        else if (arg == "--context-schedule" && i + 1 < argc) context_schedule = argv[++i];
         else if (arg == "--warmup-audio" && i + 1 < argc) warmup_audio_file = argv[++i];
         else if (arg == "--output" && i + 1 < argc) output_file = argv[++i];
         else if (arg == "--timing-json" && i + 1 < argc) timing_json_file = argv[++i];
@@ -362,6 +409,11 @@ int main(int argc, char* argv[])
                   << " samples at model rate, " << copy_n << " used)" << std::endl;
     }
 
+    const std::vector<ContextSpan> context_spans = parse_context_schedule(context_schedule);
+    for (const ContextSpan& span : context_spans)
+        std::cout << "Context: [" << span.start_s << "s, " << span.end_s << "s) -> "
+                  << (span.live ? "live percussion" : "self") << std::endl;
+
     // --- Set up processor and worker ---
     streamgen::StreamGenProcessor processor;
     streamgen::InferenceWorker worker(processor);
@@ -410,6 +462,14 @@ int main(int argc, char* argv[])
     {
         int64_t remaining = total_input_samples - pos;
         int chunk = static_cast<int>(std::min(static_cast<int64_t>(BLOCK_SIZE), remaining));
+        // Context source for this block from the schedule (last matching span wins; default self).
+        const double block_t = static_cast<double>(pos) / static_cast<double>(model_sample_rate);
+        bool ctx_live = false;
+        for (const ContextSpan& span : context_spans)
+            if (block_t >= span.start_s && block_t < span.end_s)
+                ctx_live = span.live;
+        processor.percussion_as_context.store(ctx_live, std::memory_order_relaxed);
+
         // Percussion first: it writes at the current position without advancing the scheduler.
         processor.feed_percussion_audio(&percussion_mono[static_cast<size_t>(pos)], chunk);
         processor.feed_streamgen_audio(&input_mono[static_cast<size_t>(pos)], chunk);

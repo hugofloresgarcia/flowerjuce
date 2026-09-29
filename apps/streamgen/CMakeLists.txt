@@ -89,3 +89,29 @@ target_compile_definitions(StreamGenProcessorHoldTests PRIVATE
     JUCE_WEB_BROWSER=0
     JUCE_USE_CURL=0
 )
+
+# Per-region drum context source (live percussion vs model's own output)
+add_executable(StreamGenProcessorContextSourceTests
+    tests/StreamGenProcessorContextSourceTest.cpp
+    StreamGenProcessor.cpp
+    GenerationScheduler.cpp
+    GenerationTimelineStore.cpp
+)
+
+target_include_directories(StreamGenProcessorContextSourceTests PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}
+    ${CMAKE_CURRENT_SOURCE_DIR}/../layercake/core
+)
+
+target_link_libraries(StreamGenProcessorContextSourceTests PRIVATE
+    juce::juce_audio_basics
+    juce::juce_audio_devices
+    juce::juce_audio_formats
+    juce::juce_core
+    juce::juce_events
+)
+
+target_compile_definitions(StreamGenProcessorContextSourceTests PRIVATE
+    JUCE_WEB_BROWSER=0
+    JUCE_USE_CURL=0
+)

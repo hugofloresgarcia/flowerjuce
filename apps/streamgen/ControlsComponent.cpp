@@ -289,6 +289,17 @@ ControlsComponent::ControlsComponent()
     };
     addAndMakeVisible(m_loop_last_gen_toggle);
 
+    m_percussion_context_toggle.setToggleState(false, juce::dontSendNotification);
+    m_percussion_context_toggle.setTooltip(
+        "While on, the live percussion input (not the model's own past drums) is the drum context "
+        "for the frames being recorded; the next job's kept prefix uses it region by region.");
+    m_percussion_context_toggle.onClick = [this]()
+    {
+        if (on_percussion_context_changed)
+            on_percussion_context_changed(m_percussion_context_toggle.getToggleState());
+    };
+    addAndMakeVisible(m_percussion_context_toggle);
+
     LayerCakeLookAndFeel::setControlButtonType(m_simulate_button, LayerCakeLookAndFeel::ControlButtonType::Trigger);
     m_simulate_button.onClick = [this]()
     {
@@ -575,6 +586,8 @@ void ControlsComponent::layout_session_rows(juce::Rectangle<int> inner)
     row.removeFromLeft(spacing);
     m_model_label.setBounds(row.removeFromLeft(model_lbl_w));
     m_model_combo.setBounds(row.removeFromLeft(model_cb_w));
+    row.removeFromLeft(spacing * 3);
+    m_percussion_context_toggle.setBounds(row.removeFromLeft(150));
 }
 
 void ControlsComponent::resized()

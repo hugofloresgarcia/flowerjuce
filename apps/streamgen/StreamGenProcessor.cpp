@@ -20,6 +20,9 @@ constexpr std::uint8_t k_drums_origin_none = 0;
 constexpr std::uint8_t k_drums_origin_warm = 1;
 constexpr std::uint8_t k_drums_origin_gen = 2;
 constexpr std::uint8_t k_drums_origin_hold = 3;
+/// `m_context_source_ring` values.
+constexpr std::uint8_t k_context_source_self = 0;
+constexpr std::uint8_t k_context_source_live = 1;
 
 bool sample_in_completed_gen_land(int64_t sample_abs, const std::vector<JobTimelineRecord>& jobs)
 {
@@ -204,6 +207,7 @@ void StreamGenProcessor::rebuild_ring_buffers(int ring_sample_rate)
     m_ring_buffer_size = ring_sample_rate * RING_BUFFER_SECONDS;
     m_streamgen_audio_ring.assign(static_cast<size_t>(m_ring_buffer_size) * NUM_CHANNELS, 0.0f);
     m_percussion_ring.assign(static_cast<size_t>(m_ring_buffer_size), 0.0f);
+    m_context_source_ring.assign(static_cast<size_t>(m_ring_buffer_size), k_context_source_self);
     m_drums_output_ring.assign(static_cast<size_t>(m_ring_buffer_size) * NUM_CHANNELS, 0.0f);
     m_drums_monitor_ring.assign(static_cast<size_t>(m_ring_buffer_size) * NUM_CHANNELS, 0.0f);
     m_drums_origin_ring.assign(static_cast<size_t>(m_ring_buffer_size), k_drums_origin_none);
@@ -224,6 +228,7 @@ void StreamGenProcessor::reset_timeline_and_transport()
     {
         std::fill(m_streamgen_audio_ring.begin(), m_streamgen_audio_ring.end(), 0.0f);
         std::fill(m_percussion_ring.begin(), m_percussion_ring.end(), 0.0f);
+        std::fill(m_context_source_ring.begin(), m_context_source_ring.end(), k_context_source_self);
         std::fill(m_drums_output_ring.begin(), m_drums_output_ring.end(), 0.0f);
         std::fill(m_drums_monitor_ring.begin(), m_drums_monitor_ring.end(), 0.0f);
         std::fill(m_drums_origin_ring.begin(), m_drums_origin_ring.end(), k_drums_origin_none);
@@ -374,6 +379,8 @@ void StreamGenProcessor::audioDeviceIOCallbackWithContext(
                 written += chunk;
             }
             write_percussion_to_ring_at(nullptr, num_samples, pos_block_start);
+            write_context_source_at(
+                percussion_as_context.load(std::memory_order_relaxed), num_samples, pos_block_start);
             if (num_output_channels >= 2 && output_data != nullptr)
             {
                 std::memset(output_data[0], 0, static_cast<size_t>(num_samples) * sizeof(float));
@@ -503,6 +510,12 @@ void StreamGenProcessor::audioDeviceIOCallbackWithContext(
         in_path += live_perc != nullptr ? "+live_perc" : "+perc_zeros";
         write_percussion_to_ring_at(live_perc, num_samples, pos_block_start);
     }
+
+    // Which drum context the frames of this block will contribute to later jobs (per-region source).
+    const bool ctx_live = percussion_as_context.load(std::memory_order_relaxed);
+    write_context_source_at(ctx_live, num_samples, pos_block_start);
+    if (ctx_live)
+        in_path += " ctx=live";
 
     // --- Read drums output from ring buffer ---
     if (num_output_channels >= 2 && output_data != nullptr)
@@ -773,7 +786,31 @@ void StreamGenProcessor::write_streamgen_audio_to_ring(const float* mono_input, 
 
 void StreamGenProcessor::feed_percussion_audio(const float* mono_input, int num_samples)
 {
-    write_percussion_to_ring_at(mono_input, num_samples, m_scheduler.absolute_sample_pos());
+    const int64_t pos = m_scheduler.absolute_sample_pos();
+    write_percussion_to_ring_at(mono_input, num_samples, pos);
+    write_context_source_at(percussion_as_context.load(std::memory_order_relaxed), num_samples, pos);
+}
+
+void StreamGenProcessor::write_context_source_at(bool live, int num_samples, int64_t abs_block_start)
+{
+    const std::uint8_t v = live ? k_context_source_live : k_context_source_self;
+    for (int i = 0; i < num_samples; ++i)
+    {
+        const int64_t ring_idx = absolute_to_ring_index(abs_block_start + static_cast<int64_t>(i));
+        m_context_source_ring[static_cast<size_t>(ring_idx)] = v;
+    }
+}
+
+int64_t StreamGenProcessor::count_live_context_samples(int64_t window_start, int64_t keep_end_sample) const
+{
+    assert(keep_end_sample >= window_start);
+    int64_t n = 0;
+    for (int64_t s = window_start; s < keep_end_sample; ++s)
+    {
+        if (m_context_source_ring[static_cast<size_t>(absolute_to_ring_index(s))] == k_context_source_live)
+            ++n;
+    }
+    return n;
 }
 
 void StreamGenProcessor::write_percussion_to_ring_at(
@@ -966,6 +1003,17 @@ std::vector<float> StreamGenProcessor::snapshot_input_audio_for_vae(
             continue;
         }
 
+        const int64_t ring_idx = absolute_to_ring_index(abs_sample);
+        if (m_context_source_ring[static_cast<size_t>(ring_idx)] == k_context_source_live)
+        {
+            // Live percussion is the drum context for this frame: mono duplicated, and live silence
+            // stays silence (no warmup fallback — the drummer chose not to play).
+            const float p = m_percussion_ring[static_cast<size_t>(ring_idx)];
+            raw[static_cast<size_t>(i)] = p;
+            raw[static_cast<size_t>(static_cast<size_t>(num_samples) + static_cast<size_t>(i))] = p;
+            continue;
+        }
+
         DrumsRingSample s = fetch_drums_ring_sample(abs_sample);
         float L = s.left;
         float R = s.right;
@@ -1103,6 +1151,40 @@ void StreamGenProcessor::fill_recent_percussion_waveform_buckets(
     float* out_max)
 {
     fill_recent_ring_waveform_buckets(m_percussion_ring, 1, duration_samples, num_buckets, out_min, out_max);
+}
+
+void StreamGenProcessor::fill_recent_live_context_buckets(
+    int duration_samples,
+    int num_buckets,
+    float* out_live_fraction)
+{
+    assert(out_live_fraction != nullptr);
+    if (duration_samples <= 0 || num_buckets <= 0)
+        return;
+
+    const int64_t current_pos = m_scheduler.absolute_sample_pos();
+    const int64_t past_span = static_cast<int64_t>(
+        static_cast<double>(duration_samples) * static_cast<double>(k_timeline_playhead_past_fraction));
+    const int64_t start = current_pos - past_span;
+
+    for (int b = 0; b < num_buckets; ++b)
+    {
+        const int i0 = static_cast<int>((static_cast<int64_t>(b) * duration_samples) / num_buckets);
+        int i1 = static_cast<int>((static_cast<int64_t>(b + 1) * duration_samples) / num_buckets);
+        if (i1 <= i0)
+            i1 = i0 + 1;
+
+        int live = 0;
+        for (int i = i0; i < i1; ++i)
+        {
+            const int64_t sample_abs = start + static_cast<int64_t>(i);
+            if (sample_abs > current_pos)
+                continue;
+            if (m_context_source_ring[static_cast<size_t>(absolute_to_ring_index(sample_abs))] == k_context_source_live)
+                ++live;
+        }
+        out_live_fraction[b] = static_cast<float>(live) / static_cast<float>(i1 - i0);
+    }
 }
 
 void StreamGenProcessor::fill_recent_ring_waveform_buckets(

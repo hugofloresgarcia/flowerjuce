@@ -209,6 +209,14 @@ void InferenceWorker::process_job(const GenerationJob& job)
         job.window_length_samples(),
         job.keep_end_sample);
 
+    // The job as completed: same as scheduled plus how much of the drum prefix was live percussion.
+    GenerationJob completed_job = job;
+    completed_job.live_context_samples =
+        m_processor.count_live_context_samples(job.window_start_sample, job.keep_end_sample);
+    streamgen_log("InferenceWorker::process_job id=" + juce::String(job.job_id)
+        + " live_context_samples=" + juce::String(completed_job.live_context_samples)
+        + " / keep=" + juce::String(job.keep_end_sample - job.window_start_sample));
+
     dump_pre_vae_wavs_if_enabled(
         job,
         static_cast<double>(m_config.sample_rate),
@@ -292,7 +300,7 @@ void InferenceWorker::process_job(const GenerationJob& job)
     // Timeline completion before ring write so UI land intervals (`has_completed`, `gen_samples`) are
     // visible before any thread observes new ring audio.
     if (m_timeline != nullptr)
-        m_timeline->record_completed(job.job_id, job, total_ms, gen_samples);
+        m_timeline->record_completed(job.job_id, completed_job, total_ms, gen_samples);
 
     // Write to output ring buffer with crossfade
     int xfade = crossfade_samples.load(std::memory_order_relaxed);
@@ -325,7 +333,7 @@ void InferenceWorker::process_job(const GenerationJob& job)
 
         m_last_snapshot.timing = pipeline_timing;
         m_last_snapshot.diagnostics = diag;
-        m_last_snapshot.job = job;
+        m_last_snapshot.job = completed_job;
         m_last_snapshot.t5_sequence_length = m_input_ids.size();
         m_last_snapshot.t5_attention_nonzero_positions = attn_positions;
         m_last_snapshot.wall_clock_ms = total_ms;

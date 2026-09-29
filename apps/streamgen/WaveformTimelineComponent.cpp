@@ -304,6 +304,16 @@ void WaveformTimelineComponent::update(
     repaint();
 }
 
+void WaveformTimelineComponent::set_live_context_buckets(const float* live_fraction, int num_px)
+{
+    if (live_fraction == nullptr || num_px <= 0)
+    {
+        m_live_context_px.clear();
+        return;
+    }
+    m_live_context_px.assign(live_fraction, live_fraction + static_cast<size_t>(num_px));
+}
+
 void WaveformTimelineComponent::set_time_axis_for_paint(
     bool musical,
     float bpm,
@@ -411,6 +421,22 @@ void WaveformTimelineComponent::paint(juce::Graphics& g)
 
     g.setColour(border.withAlpha(0.75f));
     g.drawHorizontalLine(static_cast<int>(mid_y), 0.0f, static_cast<float>(w));
+
+    // --- Percussion lane: shade columns where live percussion was the drum context ---
+    if (m_timeline_role == TimelineWaveRole::Percussion && !m_live_context_px.empty())
+    {
+        const int n = juce::jmin(w, static_cast<int>(m_live_context_px.size()));
+        const float column_w = static_cast<float>(w) / static_cast<float>(juce::jmax(1, n));
+        for (int px = 0; px < n; ++px)
+        {
+            const float frac = m_live_context_px[static_cast<size_t>(px)];
+            if (frac <= 0.01f)
+                continue;
+            g.setColour(accent_amber.withAlpha(0.08f + 0.18f * frac));
+            g.fillRect(static_cast<float>(px) * column_w, static_cast<float>(waveform_top),
+                       column_w + 0.5f, static_cast<float>(waveform_height));
+        }
+    }
 
     // --- Timeline overlays: [input] / [keep] / [generated] tags + thin band fills ---
     if (m_timeline_jobs != nullptr)
@@ -521,6 +547,9 @@ void WaveformTimelineComponent::paint(juce::Graphics& g)
             else if (rec.has_completed && rec.gen_samples > 0)
             {
                 lbl += " inf " + format_latency(rec.inference_ms);
+                if (rec.job.live_context_samples > 0)
+                    lbl += " live " + juce::String(
+                        samples_to_seconds(rec.job.live_context_samples, m_sample_rate), 1) + "s";
                 if (rec.completed_steady_ns > rec.scheduled_steady_ns)
                 {
                     double arr_ms = static_cast<double>(rec.completed_steady_ns - rec.scheduled_steady_ns) / 1.0e6;

@@ -119,6 +119,7 @@ private:
     std::vector<float> m_streamgen_audio_wave_max;
     std::vector<float> m_percussion_wave_min;
     std::vector<float> m_percussion_wave_max;
+    std::vector<float> m_percussion_live_context;
     std::vector<float> m_drums_wave_min;
     std::vector<float> m_drums_wave_max;
     std::vector<float> m_drums_wave_warm_min;

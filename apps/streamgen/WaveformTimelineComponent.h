@@ -51,6 +51,10 @@ public:
         const float* drums_hold_min = nullptr,
         const float* drums_hold_max = nullptr);
 
+    /// Per-column fraction (0..1) of frames whose drum context was live percussion (Percussion lane
+    /// only; shaded behind the waveform). Call before `update`; `num_px` must match its `num_px`.
+    void set_live_context_buckets(const float* live_fraction, int num_px);
+
     /// Set the label displayed in the top-left corner (e.g. "STREAMGEN AUDIO", "DRUMS OUTPUT").
     void set_label(const juce::String& label) { m_label = label; }
 
@@ -92,6 +96,7 @@ private:
     std::vector<float> m_drums_hold_min_px;
     std::vector<float> m_drums_hold_max_px;
     bool m_drums_source_split = false;
+    std::vector<float> m_live_context_px;
 
     bool m_paint_musical = false;
     float m_paint_bpm = kStreamGenDefaultBpm;

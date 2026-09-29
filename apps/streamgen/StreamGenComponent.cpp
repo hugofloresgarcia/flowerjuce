@@ -177,6 +177,13 @@ StreamGenComponent::StreamGenComponent(
         m_processor.streamgen_audio_gain.store(val, std::memory_order_relaxed);
     };
 
+    m_controls.on_percussion_context_changed = [this](bool live)
+    {
+        m_processor.percussion_as_context.store(live, std::memory_order_relaxed);
+        streamgen_log("UI: percussion_as_context=" + juce::String(live ? "true" : "false")
+            + " abs_pos=" + juce::String(m_processor.scheduler().absolute_sample_pos()));
+    };
+
     m_mixer.on_percussion_gain_changed = [this](float val)
     {
         m_processor.percussion_gain.store(val, std::memory_order_relaxed);
@@ -506,6 +513,7 @@ void StreamGenComponent::timerCallback()
         m_streamgen_audio_wave_max.resize(w);
         m_percussion_wave_min.resize(w);
         m_percussion_wave_max.resize(w);
+        m_percussion_live_context.resize(w);
         m_drums_wave_min.resize(w);
         m_drums_wave_max.resize(w);
         m_drums_wave_warm_min.resize(w);
@@ -529,6 +537,8 @@ void StreamGenComponent::timerCallback()
 
     m_processor.fill_recent_percussion_waveform_buckets(
         visible_samples, wave_w, m_percussion_wave_min.data(), m_percussion_wave_max.data());
+    m_processor.fill_recent_live_context_buckets(visible_samples, wave_w, m_percussion_live_context.data());
+    m_percussion_waveform.set_live_context_buckets(m_percussion_live_context.data(), wave_w);
     m_percussion_waveform.update(
         m_percussion_wave_min.data(),
         m_percussion_wave_max.data(),
@@ -573,11 +583,13 @@ void StreamGenComponent::timerCallback()
     // Source tags
     const bool sim_playing = m_processor.simulation_playing.load(std::memory_order_relaxed);
     m_streamgen_audio_waveform.set_source_tag(sim_playing ? "[SIM]" : "[LIVE]");
-    if (sim_playing && m_processor.simulation_percussion_total_samples.load(std::memory_order_relaxed) > 0)
-        m_percussion_waveform.set_source_tag("[SIM]");
-    else
-        m_percussion_waveform.set_source_tag(
-            "[LIVE ch " + juce::String(m_processor.percussion_input_channel.load(std::memory_order_relaxed)) + "]");
+    juce::String perc_tag = (sim_playing
+        && m_processor.simulation_percussion_total_samples.load(std::memory_order_relaxed) > 0)
+        ? juce::String("[SIM]")
+        : "[LIVE ch " + juce::String(m_processor.percussion_input_channel.load(std::memory_order_relaxed)) + "]";
+    if (m_processor.percussion_as_context.load(std::memory_order_relaxed))
+        perc_tag += " [CONTEXT]";
+    m_percussion_waveform.set_source_tag(perc_tag);
 
     const bool drums_hold = m_processor.drums_output_from_last_gen_hold.load(std::memory_order_relaxed);
     juce::String drums_tag;
