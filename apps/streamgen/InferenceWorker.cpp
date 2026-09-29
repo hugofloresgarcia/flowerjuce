@@ -224,6 +224,24 @@ void InferenceWorker::process_job(const GenerationJob& job)
         streamgen_audio,
         input_audio);
 
+    // Buffer debug dump extras, captured at the same moment as the model inputs above.
+    const bool dump_buffers = pre_vae_dump_enabled();
+    std::vector<float> dump_percussion_audio;
+    std::vector<float> dump_live_fraction;
+    bool dump_percussion_as_context = false;
+    std::string dump_prompt;
+    if (dump_buffers)
+    {
+        dump_percussion_audio = m_processor.snapshot_percussion_audio_for_dump(
+            job.window_start_sample, job.window_length_samples(), job.keep_end_sample);
+        dump_live_fraction = m_processor.live_context_fraction_per_frame(
+            job.window_start_sample, job.window_length_samples(), job.keep_end_sample,
+            m_config.latent_length);
+        dump_percussion_as_context = m_processor.percussion_as_context.load(std::memory_order_relaxed);
+        std::lock_guard<std::mutex> lock(m_prompt_mutex);
+        dump_prompt = m_prompt;
+    }
+
     // Run the pipeline
     std::vector<float> empty_latent;
     auto output = m_pipeline->generate(
@@ -269,6 +287,26 @@ void InferenceWorker::process_job(const GenerationJob& job)
         static_cast<double>(m_config.sample_rate),
         m_config.sample_size,
         output);
+
+    if (dump_buffers)
+    {
+        JobConditioningDump cond;
+        cond.inpaint_mask = &m_pipeline->last_inpaint_mask();
+        cond.tf_inpaint_mask = &m_pipeline->last_tf_inpaint_mask();
+        cond.live_fraction = &dump_live_fraction;
+        cond.live_context_samples = completed_job.live_context_samples;
+        cond.output_written_start_frame = job.keep_end_sample - job.window_start_sample;
+        cond.percussion_as_context_at_dump = dump_percussion_as_context;
+        cond.latent_length = m_config.latent_length;
+        cond.downsampling_ratio = m_config.downsampling_ratio;
+        cond.prompt = dump_prompt;
+        dump_job_conditioning_if_enabled(
+            job,
+            static_cast<double>(m_config.sample_rate),
+            m_processor.scheduler().effective_playback_rate_hz(),
+            dump_percussion_audio,
+            cond);
+    }
 
     if (!reuse_t5)
     {

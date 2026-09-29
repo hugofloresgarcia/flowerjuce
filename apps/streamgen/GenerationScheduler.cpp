@@ -4,6 +4,7 @@
 #include "GenerationTimelineStore.h"
 
 #include <juce_core/juce_core.h>
+#include <cassert>
 #include <cmath>
 
 namespace streamgen {
@@ -31,15 +32,46 @@ void GenerationScheduler::configure(const ModelConstants& constants)
         + " hop_s=" + juce::String(hop_seconds.load(std::memory_order_relaxed), 3));
 }
 
+double GenerationScheduler::generated_seconds(const ModelConstants& constants, float keep_ratio)
+{
+    assert(constants.sample_rate > 0 && "ModelConstants.sample_rate must be > 0");
+    assert(keep_ratio >= 0.0f && keep_ratio < 1.0f && "keep_ratio must be in [0, 1)");
+    return constants.window_seconds() * (1.0 - static_cast<double>(keep_ratio));
+}
+
+double GenerationScheduler::generated_seconds() const
+{
+    return generated_seconds(m_constants, keep_ratio.load(std::memory_order_relaxed));
+}
+
 void GenerationScheduler::sync_hop_seconds_to_keep_ratio()
 {
-    const int sr = m_constants.sample_rate > 0 ? m_constants.sample_rate : 44100;
-    const double window_s =
-        static_cast<double>(m_constants.sample_size) / static_cast<double>(sr);
-    float kr = keep_ratio.load(std::memory_order_relaxed);
-    kr = juce::jlimit(0.0f, 0.999f, kr);
-    const double hop_s = window_s * (1.0 - static_cast<double>(kr));
-    hop_seconds.store(static_cast<float>(hop_s), std::memory_order_relaxed);
+    hop_seconds.store(static_cast<float>(generated_seconds()), std::memory_order_relaxed);
+}
+
+void GenerationScheduler::clamp_hop_seconds_to_generated_length()
+{
+    const float cap = static_cast<float>(generated_seconds());
+    const float hop = hop_seconds.load(std::memory_order_relaxed);
+    if (hop <= cap)
+        return;
+    hop_seconds.store(cap, std::memory_order_relaxed);
+    streamgen_log(juce::String::formatted(
+        "scheduler: hop clamped %.3f -> %.3f s (generated length at keep=%.2f)",
+        static_cast<double>(hop),
+        static_cast<double>(cap),
+        static_cast<double>(keep_ratio.load(std::memory_order_relaxed))));
+}
+
+double GenerationScheduler::launch_quantize_step_seconds() const
+{
+    if (!musical_time_enabled.load(std::memory_order_relaxed))
+        return 0.0;
+    const int q = quantize_launch_beats.load(std::memory_order_relaxed);
+    if (q < 1)
+        return 0.0;
+    const double bpm_val = static_cast<double>(clamp_bpm(bpm.load(std::memory_order_relaxed)));
+    return static_cast<double>(q) * 60.0 / bpm_val;
 }
 
 void GenerationScheduler::set_playback_sample_rate(int hz)

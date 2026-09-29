@@ -964,6 +964,48 @@ std::vector<float> StreamGenProcessor::snapshot_percussion_audio(int64_t window_
     return result;
 }
 
+std::vector<float> StreamGenProcessor::snapshot_percussion_audio_for_dump(
+    int64_t window_start, int64_t num_samples, int64_t keep_end_sample)
+{
+    assert(num_samples > 0);
+    assert(keep_end_sample >= window_start && keep_end_sample <= window_start + num_samples);
+    std::vector<float> mono = snapshot_percussion_audio(window_start, num_samples);
+    assert(static_cast<int64_t>(mono.size()) == num_samples);
+    std::fill(mono.begin() + static_cast<std::ptrdiff_t>(keep_end_sample - window_start), mono.end(), 0.0f);
+    std::vector<float> raw(static_cast<size_t>(num_samples) * NUM_CHANNELS);
+    std::copy(mono.begin(), mono.end(), raw.begin());
+    std::copy(mono.begin(), mono.end(), raw.begin() + static_cast<std::ptrdiff_t>(num_samples));
+    const double playback_hz = static_cast<double>(m_scheduler.effective_playback_rate_hz());
+    const double model_hz = static_cast<double>(m_constants.sample_rate);
+    std::vector<float> out;
+    resample_row_major_playback_window_to_model_rate(
+        raw, static_cast<int>(num_samples), playback_hz, model_hz, out);
+    return out;
+}
+
+std::vector<float> StreamGenProcessor::live_context_fraction_per_frame(
+    int64_t window_start, int64_t num_samples, int64_t keep_end_sample, int num_frames) const
+{
+    assert(num_samples > 0);
+    assert(keep_end_sample >= window_start && keep_end_sample <= window_start + num_samples);
+    assert(num_frames > 0 && num_frames <= num_samples);
+    std::vector<float> fraction(static_cast<size_t>(num_frames), 0.0f);
+    for (int f = 0; f < num_frames; ++f)
+    {
+        const int64_t s0 = window_start + (static_cast<int64_t>(f) * num_samples) / num_frames;
+        const int64_t s1 = window_start + (static_cast<int64_t>(f + 1) * num_samples) / num_frames;
+        assert(s1 > s0);
+        int64_t live = 0;
+        for (int64_t s = s0; s < std::min(s1, keep_end_sample); ++s)
+        {
+            if (m_context_source_ring[static_cast<size_t>(absolute_to_ring_index(s))] == k_context_source_live)
+                ++live;
+        }
+        fraction[static_cast<size_t>(f)] = static_cast<float>(live) / static_cast<float>(s1 - s0);
+    }
+    return fraction;
+}
+
 std::vector<float> StreamGenProcessor::snapshot_streamgen_audio_for_vae(int64_t window_start, int64_t num_samples)
 {
     assert(num_samples > 0);

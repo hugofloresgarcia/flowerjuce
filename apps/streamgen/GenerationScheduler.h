@@ -27,9 +27,32 @@ public:
     ///     constants: Model window and timing parameters from the Zenon config.
     void configure(const ModelConstants& constants);
 
-    /// Set `hop_seconds` from the configured model window and current `keep_ratio`:
-    /// `window_seconds * (1 - keep_ratio)` so each hop advances by the generated (non-kept) fraction.
+    /// Seconds of new audio one generation writes: the non-kept tail of the model window,
+    /// `window_seconds * (1 - keep_ratio)`. This is the upper bound for `hop_seconds`; a longer
+    /// hop leaves gaps between generations.
+    ///
+    /// Args:
+    ///     constants: Model constants; `sample_rate` must be > 0.
+    ///     keep_ratio: Kept fraction of the window, in [0, 1).
+    /// Returns:
+    ///     Generated length in seconds, > 0.
+    static double generated_seconds(const ModelConstants& constants, float keep_ratio);
+
+    /// `generated_seconds()` for this scheduler's configured constants and current `keep_ratio`.
+    double generated_seconds() const;
+
+    /// Set `hop_seconds` to `generated_seconds()` so each hop advances by exactly the generated
+    /// (non-kept) fraction. Used at configure time and by the CLI when no `--hop` is given.
     void sync_hop_seconds_to_keep_ratio();
+
+    /// Lower `hop_seconds` to `generated_seconds()` when it exceeds it; never raises it.
+    /// Called when `keep_ratio` changes so a hop the user chose survives unless it would leave gaps.
+    void clamp_hop_seconds_to_generated_length();
+
+    /// Length of one launch-quantize step in seconds (`quantize_launch_beats` beats at `bpm`), or 0
+    /// when musical time is off or quantize is off. Generations wait for this grid after each hop,
+    /// so a step longer than `generated_seconds()` leaves gaps whatever the hop.
+    double launch_quantize_step_seconds() const;
 
     /// Sample rate of the live audio device (callback / ring). If unset (0), hop/delay use model rate.
     void set_playback_sample_rate(int hz);

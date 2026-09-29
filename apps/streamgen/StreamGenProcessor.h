@@ -176,6 +176,24 @@ public:
         int64_t num_samples,
         int64_t keep_end_sample);
 
+    /// Live percussion ring over `[window_start, keep_end_sample)` (whatever the context toggle),
+    /// zeros from `keep_end_sample` on: those samples are not recorded yet when the job runs, so
+    /// the ring still holds audio from one ring length earlier. Mono duplicated to stereo row-major
+    /// (L block, R block), resampled to `m_constants.sample_rate`. Same length and alignment as
+    /// `snapshot_input_audio_for_vae`. Used by the buffer debug dump.
+    std::vector<float> snapshot_percussion_audio_for_dump(
+        int64_t window_start, int64_t num_samples, int64_t keep_end_sample);
+
+    /// Fraction of playback-clock samples in `[window_start, keep_end_sample)` flagged live in
+    /// `m_context_source_ring`, for each of `num_frames` equal slices of
+    /// `[window_start, window_start + num_samples)`. Samples at or after `keep_end_sample` count
+    /// as not live (their flags are stale, and the drum context is silence there anyway).
+    ///
+    /// Returns:
+    ///     (num_frames,) values in [0, 1]; slice f covers the same time span as latent frame f.
+    std::vector<float> live_context_fraction_per_frame(
+        int64_t window_start, int64_t num_samples, int64_t keep_end_sample, int num_frames) const;
+
     /// Number of playback-clock frames in `[window_start, keep_end_sample)` flagged live
     /// (i.e. taken from the percussion ring by `snapshot_input_audio_for_vae`).
     int64_t count_live_context_samples(int64_t window_start, int64_t keep_end_sample) const;

@@ -305,6 +305,9 @@ std::vector<float> ZenonPipeline::generate(
         tf_inpaint_mask[i] = 1.0f;
     }
 
+    m_last_inpaint_mask = inpaint_mask;
+    m_last_tf_inpaint_mask = tf_inpaint_mask;
+
     // ---- Step 4b: Build inpaint_masked_input ----
     std::vector<float> inpaint_masked_input(latent_size);
     for (int c = 0; c < C; ++c) {

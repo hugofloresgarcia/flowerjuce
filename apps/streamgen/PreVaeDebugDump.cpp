@@ -6,6 +6,7 @@
 #include <cassert>
 #include <cstdlib>
 #include <fstream>
+#include <stdexcept>
 #include <string>
 
 namespace streamgen {
@@ -82,7 +83,85 @@ void write_meta_file(
         << "full VAE decode (2, num_frames) row-major at model rate (not the suffix-only slice written to the ring).\n";
 }
 
+juce::var float_vector_to_var(const std::vector<float>& values)
+{
+    juce::Array<juce::var> arr;
+    arr.ensureStorageAllocated(static_cast<int>(values.size()));
+    for (float v : values)
+        arr.add(static_cast<double>(v));
+    return juce::var(arr);
+}
+
+juce::String job_file_base(const GenerationJob& job)
+{
+    return "pre_vae_" + juce::String(job.job_id).paddedLeft('0', 8);
+}
+
 } // namespace
+
+bool pre_vae_dump_enabled()
+{
+    const char* dir_c = env_pre_vae_dir();
+    return dir_c != nullptr && dir_c[0] != '\0';
+}
+
+void dump_job_conditioning_if_enabled(
+    const GenerationJob& job,
+    double model_sample_rate_hz,
+    int playback_sample_rate_hz,
+    const std::vector<float>& percussion_row_major_lr,
+    const JobConditioningDump& cond)
+{
+    if (!pre_vae_dump_enabled())
+        return;
+
+    assert(cond.inpaint_mask != nullptr && cond.tf_inpaint_mask != nullptr && cond.live_fraction != nullptr);
+    assert(cond.latent_length > 0 && cond.downsampling_ratio > 0);
+    assert(static_cast<int>(cond.inpaint_mask->size()) == cond.latent_length);
+    assert(static_cast<int>(cond.tf_inpaint_mask->size()) == cond.latent_length);
+    assert(static_cast<int>(cond.live_fraction->size()) == cond.latent_length);
+    assert(percussion_row_major_lr.size() >= 2u && percussion_row_major_lr.size() % 2u == 0u);
+
+    juce::File dir(juce::String::fromUTF8(env_pre_vae_dir()));
+    if (!dir.isDirectory())
+        dir.createDirectory();
+
+    const juce::String base = job_file_base(job);
+    const int num_frames = static_cast<int>(percussion_row_major_lr.size() / 2u);
+
+    const juce::File path_perc = dir.getChildFile(base + "_percussion.wav");
+    if (!write_row_major_stereo_float_wav(path_perc, percussion_row_major_lr, num_frames, model_sample_rate_hz))
+        throw std::runtime_error("StreamGen buffer dump: could not write " + path_perc.getFullPathName().toStdString());
+
+    auto* obj = new juce::DynamicObject();
+    obj->setProperty("job_id", static_cast<juce::int64>(job.job_id));
+    obj->setProperty("model_sample_rate_hz", model_sample_rate_hz);
+    obj->setProperty("playback_sample_rate_hz", playback_sample_rate_hz);
+    obj->setProperty("window_start_sample", static_cast<juce::int64>(job.window_start_sample));
+    obj->setProperty("window_end_sample", static_cast<juce::int64>(job.window_end_sample));
+    obj->setProperty("keep_end_sample", static_cast<juce::int64>(job.keep_end_sample));
+    obj->setProperty("output_start_sample", static_cast<juce::int64>(job.output_start_sample()));
+    obj->setProperty("output_written_start_frame", static_cast<juce::int64>(cond.output_written_start_frame));
+    obj->setProperty("num_frames_model_rate", num_frames);
+    obj->setProperty("keep_ratio", static_cast<double>(job.keep_ratio));
+    obj->setProperty("future_visibility_frames", job.future_visibility_frames);
+    obj->setProperty("steps", job.steps);
+    obj->setProperty("cfg_scale", static_cast<double>(job.cfg_scale));
+    obj->setProperty("latent_length", cond.latent_length);
+    obj->setProperty("downsampling_ratio", cond.downsampling_ratio);
+    obj->setProperty("live_context_samples", static_cast<juce::int64>(cond.live_context_samples));
+    obj->setProperty("percussion_as_context_at_dump", cond.percussion_as_context_at_dump);
+    obj->setProperty("prompt", juce::String::fromUTF8(cond.prompt.c_str()));
+    obj->setProperty("inpaint_mask", float_vector_to_var(*cond.inpaint_mask));
+    obj->setProperty("tf_inpaint_mask", float_vector_to_var(*cond.tf_inpaint_mask));
+    obj->setProperty("live_fraction", float_vector_to_var(*cond.live_fraction));
+
+    const juce::File path_json = dir.getChildFile(base + "_cond.json");
+    if (!path_json.replaceWithText(juce::JSON::toString(juce::var(obj))))
+        throw std::runtime_error("StreamGen buffer dump: could not write " + path_json.getFullPathName().toStdString());
+
+    DBG("StreamGen buffer dump: wrote " + path_perc.getFullPathName() + " " + path_json.getFullPathName());
+}
 
 void dump_pre_vae_wavs_if_enabled(
     const GenerationJob& job,

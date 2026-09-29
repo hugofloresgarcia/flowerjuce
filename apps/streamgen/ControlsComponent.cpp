@@ -28,7 +28,6 @@ constexpr int k_quantize_item_ids[] = {0, 1, 2, 4, 8};
 constexpr int k_quantize_item_count = static_cast<int>(sizeof(k_quantize_item_ids) / sizeof(k_quantize_item_ids[0]));
 
 constexpr double k_hop_min_seconds = 0.5;
-constexpr double k_hop_max_seconds = 15.0;
 constexpr double k_hop_step_seconds = 0.1;
 
 constexpr double k_schedule_delay_min_seconds = 0.0;
@@ -40,21 +39,69 @@ constexpr double k_seconds_slider_step = 0.05;
 constexpr double k_lookahead_min_seconds = -2.0;
 constexpr double k_lookahead_max_seconds = 0.0;
 
-/// Model picker text height: 25% above the 14 px LayerCake combo default.
-constexpr float k_model_combo_font_size = 17.5f;
+/// Standard control row height used by every group except the enlarged Session row 2.
+constexpr int k_row_h = 26;
+/// Session row 2 (Reset, Model picker, Perc -> context): double the standard row height.
+constexpr int k_session_row2_h = 2 * k_row_h;
+/// Session row 2 text height (model label, picker box and popup, toggle label).
+constexpr float k_session_row2_font_size = 24.0f;
+/// Tick box edge as a fraction of the toggle height.
+constexpr float k_session_toggle_tick_fraction = 0.6f;
+/// Horizontal padding inside the toggle, left of the tick box and between tick and text.
+constexpr float k_session_toggle_pad = 8.0f;
+/// Corner radius of the amber "on" fill.
+constexpr float k_session_toggle_corner = 6.0f;
+
+juce::Font session_row2_font()
+{
+    return juce::Font(juce::FontOptions(
+        juce::Font::getDefaultMonospacedFontName(), k_session_row2_font_size, juce::Font::plain));
+}
 
 } // namespace
 
-juce::Font ControlsComponent::ModelComboLookAndFeel::getComboBoxFont(juce::ComboBox&)
+juce::Font ControlsComponent::SessionRowLookAndFeel::getComboBoxFont(juce::ComboBox&)
 {
-    return juce::Font(juce::FontOptions(
-        juce::Font::getDefaultMonospacedFontName(), k_model_combo_font_size, juce::Font::plain));
+    return session_row2_font();
 }
 
-juce::Font ControlsComponent::ModelComboLookAndFeel::getPopupMenuFont()
+juce::Font ControlsComponent::SessionRowLookAndFeel::getPopupMenuFont()
 {
-    return juce::Font(juce::FontOptions(
-        juce::Font::getDefaultMonospacedFontName(), k_model_combo_font_size, juce::Font::plain));
+    return session_row2_font();
+}
+
+juce::Font ControlsComponent::SessionRowLookAndFeel::getLabelFont(juce::Label&)
+{
+    return session_row2_font();
+}
+
+void ControlsComponent::SessionRowLookAndFeel::drawToggleButton(juce::Graphics& g,
+                                                                juce::ToggleButton& button,
+                                                                bool should_draw_button_as_highlighted,
+                                                                bool should_draw_button_as_down)
+{
+    auto bounds = button.getLocalBounds().toFloat();
+    const bool on = button.getToggleState();
+    const bool enabled = button.isEnabled();
+
+    if (on)
+    {
+        g.setColour(getControlAccentColour(ControlButtonType::Pattern).withAlpha(enabled ? 0.9f : 0.4f));
+        g.fillRoundedRectangle(bounds.reduced(1.0f), k_session_toggle_corner);
+    }
+
+    const float tick = bounds.getHeight() * k_session_toggle_tick_fraction;
+    const float tick_x = bounds.getX() + k_session_toggle_pad;
+    drawTickBox(g, button, tick_x, bounds.getCentreY() - 0.5f * tick, tick, tick,
+                on, enabled, should_draw_button_as_highlighted, should_draw_button_as_down);
+
+    const float text_x = tick_x + tick + k_session_toggle_pad;
+    const auto text_area = bounds.withLeft(text_x).withTrimmedRight(k_session_toggle_pad).toNearestInt();
+    const juce::Colour text_colour = on ? juce::Colours::black
+                                        : button.findColour(juce::ToggleButton::textColourId);
+    g.setColour(enabled ? text_colour : text_colour.withMultipliedAlpha(0.5f));
+    g.setFont(session_row2_font());
+    g.drawFittedText(button.getButtonText(), text_area, juce::Justification::centredLeft, 1);
 }
 
 ControlsComponent::ControlsComponent()
@@ -144,7 +191,8 @@ ControlsComponent::ControlsComponent()
     m_hop_label.setText("Hop (s):", juce::dontSendNotification);
     addAndMakeVisible(m_hop_label);
 
-    m_hop_slider.setRange(k_hop_min_seconds, k_hop_max_seconds, k_hop_step_seconds);
+    // Upper bound is replaced by the generated length in sync_hop_delay_controls_from_scheduler().
+    m_hop_slider.setRange(k_hop_min_seconds, m_model_constants.window_seconds(), k_hop_step_seconds);
     m_hop_slider.setValue(6.0);
     m_hop_slider.setTextBoxStyle(juce::Slider::TextBoxRight, false, 50, 20);
     m_hop_slider.onValueChange = [this]()
@@ -289,6 +337,7 @@ ControlsComponent::ControlsComponent()
     };
     addAndMakeVisible(m_loop_last_gen_toggle);
 
+    m_percussion_context_toggle.setLookAndFeel(&m_session_row_look_and_feel);
     m_percussion_context_toggle.setToggleState(false, juce::dontSendNotification);
     m_percussion_context_toggle.setTooltip(
         "While on, the live percussion input (not the model's own past drums) is the drum context "
@@ -327,7 +376,8 @@ ControlsComponent::ControlsComponent()
     m_model_label.setText("Model", juce::dontSendNotification);
     addAndMakeVisible(m_model_label);
 
-    m_model_combo.setLookAndFeel(&m_model_combo_look_and_feel);
+    m_model_label.setLookAndFeel(&m_session_row_look_and_feel);
+    m_model_combo.setLookAndFeel(&m_session_row_look_and_feel);
     m_model_combo.setTextWhenNoChoicesAvailable("<no manifests>");
     m_model_combo.onChange = [this]()
     {
@@ -355,6 +405,8 @@ ControlsComponent::ControlsComponent()
 ControlsComponent::~ControlsComponent()
 {
     m_model_combo.setLookAndFeel(nullptr);
+    m_model_label.setLookAndFeel(nullptr);
+    m_percussion_context_toggle.setLookAndFeel(nullptr);
 }
 
 double ControlsComponent::lookahead_frames_per_second() const
@@ -455,8 +507,32 @@ void ControlsComponent::set_loop_last_generation_toggle(bool on, juce::Notificat
 
 void ControlsComponent::sync_hop_delay_controls_from_scheduler(const GenerationScheduler& sched)
 {
+    const double generated_s = sched.generated_seconds();
+    jassert(generated_s >= k_hop_min_seconds);
+    m_hop_slider.setRange(k_hop_min_seconds, generated_s, k_hop_step_seconds);
     m_hop_slider.setValue(static_cast<double>(sched.hop_seconds.load(std::memory_order_relaxed)),
                           juce::dontSendNotification);
+
+    const double step_s = sched.launch_quantize_step_seconds();
+    if (step_s > generated_s)
+    {
+        const juce::String tip = juce::String::formatted(
+            "Launch Q step (%.2f s) is longer than the generated audio (%.2f s): "
+            "gaps between generations. Lower Keep or pick a shorter Launch Q.",
+            step_s, generated_s);
+        m_keep_ratio_label.setText("Keep: GAPS", juce::dontSendNotification);
+        m_keep_ratio_label.setColour(juce::Label::textColourId, juce::Colours::orangered);
+        m_keep_ratio_label.setTooltip(tip);
+        m_keep_ratio_slider.setTooltip(tip);
+    }
+    else
+    {
+        m_keep_ratio_label.setText("Keep:", juce::dontSendNotification);
+        m_keep_ratio_label.removeColour(juce::Label::textColourId);
+        m_keep_ratio_label.setTooltip({});
+        m_keep_ratio_slider.setTooltip({});
+    }
+
     m_schedule_delay_slider.setValue(
         static_cast<double>(sched.schedule_delay_seconds.load(std::memory_order_relaxed)),
         juce::dontSendNotification);
@@ -564,8 +640,9 @@ void ControlsComponent::layout_session_rows(juce::Rectangle<int> inner)
     const int btn_w = 112;
     const int small_toggle_w = 92;
     const int reset_btn_w = 88;
-    const int model_lbl_w = 48;
-    const int model_cb_w = 180;
+    const int model_lbl_w = 90;
+    const int model_cb_w = 320;
+    const int perc_toggle_w = 300;
 
     auto row = inner.removeFromTop(row_h);
     m_generation_toggle.setBounds(row.removeFromLeft(168));
@@ -581,13 +658,13 @@ void ControlsComponent::layout_session_rows(juce::Rectangle<int> inner)
     m_audio_settings_button.setBounds(row.removeFromLeft(btn_w));
 
     inner.removeFromTop(spacing);
-    row = inner.removeFromTop(row_h);
+    row = inner.removeFromTop(k_session_row2_h);
     m_reset_button.setBounds(row.removeFromLeft(reset_btn_w));
     row.removeFromLeft(spacing);
     m_model_label.setBounds(row.removeFromLeft(model_lbl_w));
     m_model_combo.setBounds(row.removeFromLeft(model_cb_w));
     row.removeFromLeft(spacing * 3);
-    m_percussion_context_toggle.setBounds(row.removeFromLeft(150));
+    m_percussion_context_toggle.setBounds(row.removeFromLeft(perc_toggle_w));
 }
 
 void ControlsComponent::resized()
@@ -606,7 +683,7 @@ void ControlsComponent::resized()
     const int prompt_block = group_inset_top + 18 + 4 + k_prompt_editor_min_height + group_inset_bottom;
     const int musical_block = group_inset_top + row_h + row_spacing + row_h + row_spacing + row_h + group_inset_bottom;
     const int inference_block = group_inset_top + row_h + row_spacing + row_h + group_inset_bottom;
-    const int session_block = group_inset_top + row_h + row_spacing + row_h + group_inset_bottom;
+    const int session_block = group_inset_top + row_h + row_spacing + k_session_row2_h + group_inset_bottom;
     const int grid_row_height = juce::jmax(musical_block, inference_block);
 
     auto pr = bounds.removeFromTop(prompt_block);

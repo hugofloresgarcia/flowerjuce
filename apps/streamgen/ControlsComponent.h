@@ -65,6 +65,8 @@ public:
     void set_loop_last_generation_toggle(bool on, juce::NotificationType notification);
 
     /// Refresh the hop and land-delay sliders (both in seconds) from the scheduler. No callbacks.
+    /// Also caps the hop slider at `sched.generated_seconds()` and shows a "GAPS" warning on the
+    /// Keep label when one launch-quantize step is longer than the generated audio.
     void sync_hop_delay_controls_from_scheduler(const GenerationScheduler& sched);
 
     /// Supply the loaded model's timing constants so the Lookahead slider can convert
@@ -83,12 +85,18 @@ public:
     void sync_click_track_from_processor(const StreamGenProcessor& processor);
 
 private:
-    /// Draws the model picker (box text and popup items) larger than the rest of the panel,
-    /// which keeps the LayerCake defaults.
-    class ModelComboLookAndFeel : public LayerCakeLookAndFeel {
+    /// Draws the second Session row (model label, model picker, Perc -> context toggle) larger
+    /// than the rest of the panel, which keeps the LayerCake defaults. The toggle fills amber
+    /// while on so live-context state is readable at a glance during performance.
+    class SessionRowLookAndFeel : public LayerCakeLookAndFeel {
     public:
         juce::Font getComboBoxFont(juce::ComboBox&) override;
         juce::Font getPopupMenuFont() override;
+        juce::Font getLabelFont(juce::Label&) override;
+        void drawToggleButton(juce::Graphics& g,
+                              juce::ToggleButton& button,
+                              bool should_draw_button_as_highlighted,
+                              bool should_draw_button_as_down) override;
     };
 
     static int time_sig_combo_index_for(int numerator, int denominator);
@@ -148,9 +156,9 @@ private:
     juce::TextButton m_simulate_button{"Simulate..."};
     juce::TextButton m_audio_settings_button{"Audio Settings"};
     juce::TextButton m_reset_button{"Reset"};
+    /// Declared before the components that point at it so it is destroyed after them.
+    SessionRowLookAndFeel m_session_row_look_and_feel;
     juce::ToggleButton m_percussion_context_toggle{"Perc -> context"};
-    /// Declared before `m_model_combo` so it is destroyed after the combo that points at it.
-    ModelComboLookAndFeel m_model_combo_look_and_feel;
     juce::Label m_model_label;
     juce::ComboBox m_model_combo;
 

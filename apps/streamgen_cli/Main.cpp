@@ -424,7 +424,18 @@ int main(int argc, char* argv[])
     auto& scheduler = processor.scheduler();
     scheduler.keep_ratio.store(keep_ratio, std::memory_order_relaxed);
     if (hop_explicit)
+    {
+        const double generated_s = scheduler.generated_seconds();
+        if (static_cast<double>(hop_override_seconds) > generated_s)
+        {
+            std::cerr << "Error: --hop " << hop_override_seconds << " s exceeds the generated length "
+                      << generated_s << " s at --keep-ratio " << keep_ratio
+                      << " (window * (1 - keep)); a longer hop leaves gaps between generations. "
+                      << "Pass --hop <= " << generated_s << " or lower --keep-ratio." << std::endl;
+            return 1;
+        }
         scheduler.hop_seconds.store(hop_override_seconds, std::memory_order_relaxed);
+    }
     else
         scheduler.sync_hop_seconds_to_keep_ratio();
     scheduler.steps.store(steps, std::memory_order_relaxed);

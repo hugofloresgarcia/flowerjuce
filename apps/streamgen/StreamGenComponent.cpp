@@ -74,7 +74,7 @@ StreamGenComponent::StreamGenComponent(
     {
         auto& sched = m_processor.scheduler();
         sched.keep_ratio.store(val, std::memory_order_relaxed);
-        sched.sync_hop_seconds_to_keep_ratio();
+        sched.clamp_hop_seconds_to_generated_length();
         m_controls.sync_hop_delay_controls_from_scheduler(sched);
     };
 
@@ -115,7 +115,9 @@ StreamGenComponent::StreamGenComponent(
 
     m_controls.on_bpm_changed = [this](float val)
     {
-        m_processor.scheduler().bpm.store(val, std::memory_order_relaxed);
+        auto& sched = m_processor.scheduler();
+        sched.bpm.store(val, std::memory_order_relaxed);
+        m_controls.sync_hop_delay_controls_from_scheduler(sched); // refresh Launch Q gap warning
     };
 
     m_controls.on_time_signature_changed = [this](int n, int d)
@@ -144,7 +146,9 @@ StreamGenComponent::StreamGenComponent(
 
     m_controls.on_quantize_launch_changed = [this](int beats)
     {
-        m_processor.scheduler().quantize_launch_beats.store(beats, std::memory_order_relaxed);
+        auto& sched = m_processor.scheduler();
+        sched.quantize_launch_beats.store(beats, std::memory_order_relaxed);
+        m_controls.sync_hop_delay_controls_from_scheduler(sched); // refresh Launch Q gap warning
     };
 
     m_controls.on_warmup_audio_clicked = [this]() { load_warmup_audio(); };
@@ -422,7 +426,8 @@ void StreamGenComponent::resized()
     const int title_height = 30;
     const int sidebar_width = 160;
     // Controls: full-width prompt, (musical | inference) grid row, full-width session.
-    const int controls_height = 360;
+    // 360 px standard layout + 26 px for ControlsComponent's double-height Session row 2.
+    const int controls_height = 386;
     const int waveform_min_height = 80;
 
     // Title bar

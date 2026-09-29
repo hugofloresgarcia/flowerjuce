@@ -122,8 +122,7 @@ static void print_usage(const char* prog)
               << "  --cuda                   Use CUDA execution provider\n"
               << "  --coreml                 Use CoreML execution provider (macOS)\n"
               << "  --migraphx               Use MIGraphX execution provider (Linux/ROCm)\n"
-              << "  --mlx-vae                Zenon VAE via MLX Metal (requires SAO_ENABLE_MLX build)\n"
-              << "  --warmup-vae             After load, run one full VAE encode+decode warmup (offsets first-run JIT)\n";
+              << "  --mlx-vae                Zenon VAE via MLX Metal (requires SAO_ENABLE_MLX build)\n";
 }
 
 int main(int argc, char* argv[])
@@ -149,7 +148,6 @@ int main(int argc, char* argv[])
     bool use_coreml = false;
     bool use_migraphx = false;
     bool use_mlx_vae = false;
-    bool warmup_vae = false;
 
     for (int i = 1; i < argc; ++i) {
         std::string arg = argv[i];
@@ -195,8 +193,6 @@ int main(int argc, char* argv[])
             use_migraphx = true;
         } else if (arg == "--mlx-vae") {
             use_mlx_vae = true;
-        } else if (arg == "--warmup-vae") {
-            warmup_vae = true;
         } else if (arg == "--help" || arg == "-h") {
             print_usage(argv[0]);
             return 0;
@@ -222,8 +218,6 @@ int main(int argc, char* argv[])
     config.use_mlx_vae = use_mlx_vae;
 
     sao::ZenonPipeline pipeline(config);
-    if (warmup_vae)
-        pipeline.warmup_vae();
 
     // --- Tokenization ---
     std::vector<int64_t> input_ids;

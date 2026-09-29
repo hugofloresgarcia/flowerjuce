@@ -155,6 +155,15 @@ public:
     /// embeddings.
     const std::vector<float>& last_masked_t5_embeddings() const { return m_last_masked_t5; }
 
+    /// `inpaint_mask` from the last `generate()`: (latent_length,) values in {0, 1}; 1 = kept drum
+    /// prefix frame (drum context visible to the model). Empty before the first call.
+    const std::vector<float>& last_inpaint_mask() const { return m_last_inpaint_mask; }
+
+    /// `tf_inpaint_mask` from the last `generate()`: (latent_length,) values in {0, 1}; 1 = frame
+    /// where `streamgen_latent` (sax) is visible. Equals `inpaint_mask` shifted by
+    /// `future_visibility_frames`. Empty before the first call.
+    const std::vector<float>& last_tf_inpaint_mask() const { return m_last_tf_inpaint_mask; }
+
     const ZenonTimingReport& timing() const { return m_timing; }
     const ZenonDiagnostics& diagnostics() const { return m_diagnostics; }
     const ZenonPipelineConfig& config() const { return m_config; }
@@ -170,13 +179,6 @@ public:
 
     bool collect_step_diagnostics() const { return m_collect_step_diagnostics; }
 
-    /// Run full-shape VAE work (two encodes + one decode) on silence / zero latent.
-    ///
-    /// Primes GPU, CUDA/cuDNN, CoreML, or MLX so the first real `generate()` pays less cold-start
-    /// latency. Discards outputs; does not update `timing()` / `diagnostics()` from `generate()`.
-    /// When `verbose()` is true, prints wall time for the warmup block.
-    void warmup_vae();
-
 private:
     std::unique_ptr<T5Encoder> m_t5;
     std::unique_ptr<DiTInpaintModel> m_dit;
@@ -187,6 +189,8 @@ private:
     ZenonTimingReport m_timing;
     ZenonDiagnostics m_diagnostics;
     std::vector<float> m_last_masked_t5;
+    std::vector<float> m_last_inpaint_mask;
+    std::vector<float> m_last_tf_inpaint_mask;
     bool m_verbose = true;
     bool m_collect_step_diagnostics = false;
 };
