@@ -28,6 +28,15 @@ public:
     ///     Ort::Exception if the model cannot be loaded.
     explicit OnnxModel(const std::string& model_path, bool use_cuda = false, bool use_coreml = false, bool use_migraphx = false);
 
+    /// Same, with a per-session MIGraphX compiled-program cache directory.
+    ///
+    /// The MIGraphX EP reads `ORT_MIGRAPHX_MODEL_CACHE_PATH` when the session is created, so the directory is
+    /// set in the environment just before that (and created if missing). Cache file names hash the graph and its
+    /// shapes but not the weights, so graphs that only differ in weights (e.g. two arms' DiTs) must not share a
+    /// directory. Ignored (with a note) when `use_migraphx` is false or the directory is empty.
+    OnnxModel(const std::string& model_path, const std::string& migraphx_cache_dir,
+              bool use_cuda, bool use_coreml, bool use_migraphx);
+
     /// Run inference with the given input tensors.
     ///
     /// Args:
@@ -45,6 +54,9 @@ public:
     const Ort::MemoryInfo& memory_info() const { return m_memory_info; }
 
 private:
+    /// Shared body; the int tag only sequences the cache-dir environment setup before `m_env`/session creation.
+    OnnxModel(const std::string& model_path, bool use_cuda, bool use_coreml, bool use_migraphx, int);
+
     Ort::Env m_env;
     Ort::SessionOptions m_session_options;
     std::unique_ptr<Ort::Session> m_session;

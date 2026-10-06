@@ -139,6 +139,11 @@ set(SAO_INFERENCE_SOURCES
     src/ZenonPipeline.cpp
     src/ZenonPipelineConfig.cpp
     src/Tokenizer.cpp
+    src/ControlFeatureExtractor.cpp
+    src/Sa3PipelineConfig.cpp
+    src/Sa3DiTModel.cpp
+    src/Sa3Sampler.cpp
+    src/Sa3Pipeline.cpp
 )
 
 if(SAO_ENABLE_MLX)
@@ -226,6 +231,25 @@ if(SAO_BUILD_TESTS)
     add_parity_test(test_dit_parity tests/test_dit_parity.cpp)
     add_parity_test(test_sampler_parity tests/test_sampler_parity.cpp)
     add_parity_test(test_full_pipeline_parity tests/test_full_pipeline_parity.cpp)
+
+    # --- SA3 parity tests (sa3-inference repo layout: tests/parity_data/<stage>/) ---
+    function(add_sa3_parity_test TEST_NAME TEST_SOURCE)
+        add_executable(${TEST_NAME} ${TEST_SOURCE})
+        target_link_libraries(${TEST_NAME} PRIVATE sao_inference cnpy-static nlohmann_json::nlohmann_json)
+        target_include_directories(${TEST_NAME} PRIVATE ${cnpy_SOURCE_DIR})
+        target_compile_definitions(${TEST_NAME} PRIVATE
+            SA3_PARITY_DATA_DIR="${SAO_REPO_ROOT}/tests/parity_data"
+            SA3_REPO_ROOT="${SAO_REPO_ROOT}"
+        )
+        add_test(NAME ${TEST_NAME} COMMAND ${TEST_NAME})
+    endfunction()
+
+    add_sa3_parity_test(test_sa3_control_features_parity tests/test_sa3_control_features_parity.cpp)
+    add_sa3_parity_test(test_sa3_number_embedder_parity tests/test_sa3_number_embedder_parity.cpp)
+    add_sa3_parity_test(test_sa3_text_encoder_parity tests/test_sa3_text_encoder_parity.cpp)
+    add_sa3_parity_test(test_sa3_manifest tests/test_sa3_manifest.cpp)
+    add_sa3_parity_test(test_sa3_dit_parity tests/test_sa3_dit_parity.cpp)
+    add_sa3_parity_test(test_sa3_pipeline_parity tests/test_sa3_pipeline_parity.cpp)
 
     # --- Zenon parity tests ---
     function(add_zenon_parity_test TEST_NAME TEST_SOURCE)

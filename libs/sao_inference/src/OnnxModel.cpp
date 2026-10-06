@@ -1,5 +1,8 @@
 #include "sao_inference/OnnxModel.h"
+#include <cstdlib>
+#include <filesystem>
 #include <iostream>
+#include <stdexcept>
 #include <unordered_map>
 
 #ifdef __APPLE__
@@ -8,7 +11,27 @@
 
 namespace sao {
 
+OnnxModel::OnnxModel(const std::string& model_path, const std::string& migraphx_cache_dir,
+                     bool use_cuda, bool use_coreml, bool use_migraphx)
+    : OnnxModel(model_path, use_cuda, use_coreml, use_migraphx,
+                [&]() {
+                    if (use_migraphx && !migraphx_cache_dir.empty()) {
+                        std::filesystem::create_directories(migraphx_cache_dir);
+                        if (setenv("ORT_MIGRAPHX_MODEL_CACHE_PATH", migraphx_cache_dir.c_str(), 1) != 0)
+                            throw std::runtime_error("OnnxModel: cannot set ORT_MIGRAPHX_MODEL_CACHE_PATH");
+                        std::cout << "[sao::OnnxModel] MIGraphX cache dir: " << migraphx_cache_dir << std::endl;
+                    }
+                    return 0;
+                }())
+{
+}
+
 OnnxModel::OnnxModel(const std::string& model_path, bool use_cuda, bool use_coreml, bool use_migraphx)
+    : OnnxModel(model_path, use_cuda, use_coreml, use_migraphx, 0)
+{
+}
+
+OnnxModel::OnnxModel(const std::string& model_path, bool use_cuda, bool use_coreml, bool use_migraphx, int)
     : m_env(ORT_LOGGING_LEVEL_WARNING, "sao_inference")
     , m_memory_info(Ort::MemoryInfo::CreateCpu(OrtArenaAllocator, OrtMemTypeDefault))
 {

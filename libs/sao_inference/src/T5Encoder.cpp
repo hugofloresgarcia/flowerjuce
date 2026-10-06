@@ -4,8 +4,9 @@
 
 namespace sao {
 
-T5Encoder::T5Encoder(const std::string& onnx_path, bool use_cuda, bool use_coreml, bool use_migraphx)
-    : m_model(onnx_path, use_cuda, use_coreml, use_migraphx)
+T5Encoder::T5Encoder(const std::string& onnx_path, bool use_cuda, bool use_coreml, bool use_migraphx,
+                     const std::string& migraphx_cache_dir)
+    : m_model(onnx_path, migraphx_cache_dir, use_cuda, use_coreml, use_migraphx)
 {
 }
 

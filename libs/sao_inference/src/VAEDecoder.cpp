@@ -4,16 +4,17 @@
 
 namespace sao {
 
-VAEDecoder::VAEDecoder(const std::string& onnx_path, float scale, bool use_cuda, bool use_coreml, bool use_migraphx)
-    : m_model(onnx_path, use_cuda, use_coreml, use_migraphx)
+VAEDecoder::VAEDecoder(const std::string& onnx_path, float scale, bool use_cuda, bool use_coreml, bool use_migraphx,
+                       const std::string& migraphx_cache_dir)
+    : m_model(onnx_path, migraphx_cache_dir, use_cuda, use_coreml, use_migraphx)
     , m_scale(scale)
 {
 }
 
 std::vector<float> VAEDecoder::decode(const std::vector<float>& latents, int latent_length)
 {
-    constexpr int LATENT_DIM = 64;
-    assert(static_cast<int>(latents.size()) == LATENT_DIM * latent_length);
+    assert(latent_length > 0 && latents.size() % static_cast<size_t>(latent_length) == 0);
+    const int LATENT_DIM = static_cast<int>(latents.size() / static_cast<size_t>(latent_length));
 
     // Apply scale before decoding
     std::vector<float> scaled(latents.size());

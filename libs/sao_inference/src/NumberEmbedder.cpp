@@ -1,110 +1,93 @@
 #include "sao_inference/NumberEmbedder.h"
 
 #include <cnpy.h>
+#include <nlohmann/json.hpp>
+
+#include <cmath>
 #include <fstream>
 #include <iostream>
-#include <cassert>
-#include <sstream>
-#include <string>
+#include <stdexcept>
 
 namespace sao {
 
-static constexpr float TWO_PI = 2.0f * 3.14159265358979323846f;
+namespace {
 
-static float parse_json_float(const std::string& json, const std::string& key)
+constexpr float kPi = 3.14159265358979323846f;
+
+cnpy::NpyArray load_float32(const std::string& path, size_t ndim)
 {
-    auto pos = json.find("\"" + key + "\"");
-    assert(pos != std::string::npos);
-    pos = json.find(':', pos);
-    assert(pos != std::string::npos);
-    return std::stof(json.substr(pos + 1));
+    cnpy::NpyArray arr = cnpy::npy_load(path);
+    if (arr.word_size != sizeof(float))
+        throw std::runtime_error("NumberEmbedder: " + path + " is not float32");
+    if (arr.shape.size() != ndim)
+        throw std::runtime_error("NumberEmbedder: " + path + " has " + std::to_string(arr.shape.size()) + " dims, expected " + std::to_string(ndim));
+    return arr;
 }
 
-static int parse_json_int(const std::string& json, const std::string& key)
-{
-    auto pos = json.find("\"" + key + "\"");
-    assert(pos != std::string::npos);
-    pos = json.find(':', pos);
-    assert(pos != std::string::npos);
-    return std::stoi(json.substr(pos + 1));
-}
+} // namespace
 
 NumberEmbedder::NumberEmbedder(const std::string& weights_dir)
 {
     std::ifstream config_file(weights_dir + "/config.json");
-    assert(config_file.is_open());
-    std::stringstream buf;
-    buf << config_file.rdbuf();
-    std::string json = buf.str();
+    if (!config_file)
+        throw std::runtime_error("NumberEmbedder: cannot open " + weights_dir + "/config.json");
+    const nlohmann::json cfg = nlohmann::json::parse(config_file);
+    const std::string type = cfg.at("fourier_features_type").get<std::string>();
+    if (type != "expo")
+        throw std::runtime_error("NumberEmbedder: fourier_features_type '" + type + "' not supported (only 'expo')");
+    m_min_val = cfg.at("min_val").get<float>();
+    m_max_val = cfg.at("max_val").get<float>();
+    m_dim = cfg.at("dim").get<int>();
+    m_features = cfg.at("features").get<int>();
+    const float min_freq = cfg.at("min_freq").get<float>();
+    const float max_freq = cfg.at("max_freq").get<float>();
+    if (m_dim <= 0 || m_dim % 2 != 0 || m_features <= 0 || !(m_max_val > m_min_val) || !(min_freq > 0.0f) || !(max_freq > min_freq))
+        throw std::runtime_error("NumberEmbedder: inconsistent config.json");
 
-    m_min_val = parse_json_float(json, "min_val");
-    m_max_val = parse_json_float(json, "max_val");
-    m_features = parse_json_int(json, "features");
-    m_half_dim = parse_json_int(json, "pos_embed_half_dim");
+    // The float32 frequency table exactly as torch computed it (exp(linspace(0,1,half)*(ln max - ln min) + ln min)).
+    // It is loaded rather than recomputed: the Fourier arguments reach thousands of radians, so a 1-ulp difference
+    // between std::exp and torch's exp moves the high-frequency features by ~1e-3.
+    const int half = m_dim / 2;
+    cnpy::NpyArray fr = load_float32(weights_dir + "/freqs.npy", 1);
+    if (static_cast<int>(fr.shape[0]) != half)
+        throw std::runtime_error("NumberEmbedder: freqs.npy must have dim/2 entries");
+    m_freqs.assign(fr.data<float>(), fr.data<float>() + static_cast<size_t>(half));
+    if (!(m_freqs.front() > 0.9f * min_freq && m_freqs.back() < 1.1f * max_freq))
+        throw std::runtime_error("NumberEmbedder: freqs.npy does not match min_freq/max_freq in config.json");
 
-    std::cout << "[sao::NumberEmbedder] min_val=" << m_min_val
-              << " max_val=" << m_max_val
-              << " features=" << m_features
-              << " half_dim=" << m_half_dim << std::endl;
+    cnpy::NpyArray w = load_float32(weights_dir + "/linear_weight.npy", 2);
+    if (static_cast<int>(w.shape[0]) != m_features || static_cast<int>(w.shape[1]) != m_dim)
+        throw std::runtime_error("NumberEmbedder: linear_weight.npy shape does not match config (features x dim)");
+    m_linear_weight.assign(w.data<float>(), w.data<float>() + static_cast<size_t>(m_features) * static_cast<size_t>(m_dim));
 
-    // Load LearnedPositionalEmbedding weights
-    auto pos_data = cnpy::npy_load(weights_dir + "/learned_pos_embed_weights.npy");
-    assert(pos_data.shape.size() == 1);
-    assert(static_cast<int>(pos_data.shape[0]) == m_half_dim);
-    m_pos_weights.assign(pos_data.data<float>(), pos_data.data<float>() + m_half_dim);
+    cnpy::NpyArray b = load_float32(weights_dir + "/linear_bias.npy", 1);
+    if (static_cast<int>(b.shape[0]) != m_features)
+        throw std::runtime_error("NumberEmbedder: linear_bias.npy shape does not match config (features)");
+    m_linear_bias.assign(b.data<float>(), b.data<float>() + static_cast<size_t>(m_features));
 
-    // Load Linear weight and bias
-    auto weight_data = cnpy::npy_load(weights_dir + "/linear_weight.npy");
-    assert(weight_data.shape.size() == 2);
-    int linear_in = static_cast<int>(weight_data.shape[1]);
-    assert(static_cast<int>(weight_data.shape[0]) == m_features);
-    assert(linear_in == m_half_dim * 2 + 1);
-    m_linear_weight.assign(weight_data.data<float>(),
-                           weight_data.data<float>() + m_features * linear_in);
-
-    auto bias_data = cnpy::npy_load(weights_dir + "/linear_bias.npy");
-    assert(bias_data.shape.size() == 1);
-    assert(static_cast<int>(bias_data.shape[0]) == m_features);
-    m_linear_bias.assign(bias_data.data<float>(), bias_data.data<float>() + m_features);
-}
-
-std::vector<float> NumberEmbedder::learned_positional_embedding(float x) const
-{
-    // Output: (x, sin(x * w[0] * 2pi), sin(x * w[1] * 2pi), ...,
-    //             cos(x * w[0] * 2pi), cos(x * w[1] * 2pi), ...)
-    // Total size: 1 + 2 * half_dim = dim + 1
-    std::vector<float> result(1 + 2 * m_half_dim);
-    result[0] = x;
-    for (int i = 0; i < m_half_dim; ++i) {
-        float freq = x * m_pos_weights[i] * TWO_PI;
-        result[1 + i] = std::sin(freq);
-        result[1 + m_half_dim + i] = std::cos(freq);
-    }
-    return result;
-}
-
-std::vector<float> NumberEmbedder::linear_forward(const std::vector<float>& input) const
-{
-    int in_size = static_cast<int>(input.size());
-    assert(in_size == m_half_dim * 2 + 1);
-
-    std::vector<float> output(m_features);
-    for (int i = 0; i < m_features; ++i) {
-        float sum = m_linear_bias[i];
-        for (int j = 0; j < in_size; ++j) {
-            sum += m_linear_weight[i * in_size + j] * input[j];
-        }
-        output[i] = sum;
-    }
-    return output;
+    std::cout << "[sao::NumberEmbedder] expo features: dim=" << m_dim << " features=" << m_features
+              << " range=[" << m_min_val << ", " << m_max_val << "] freqs=[" << min_freq << ", " << max_freq << "]" << std::endl;
 }
 
 std::vector<float> NumberEmbedder::embed(float value) const
 {
-    float clamped = std::max(m_min_val, std::min(m_max_val, value));
-    float normalized = (clamped - m_min_val) / (m_max_val - m_min_val);
-    auto pos_embed = learned_positional_embedding(normalized);
-    return linear_forward(pos_embed);
+    const float clamped = std::max(m_min_val, std::min(m_max_val, value));
+    const float s = (clamped - m_min_val) / (m_max_val - m_min_val);
+    const int half = m_dim / 2;
+    std::vector<float> feat(static_cast<size_t>(m_dim));
+    for (int i = 0; i < half; ++i) {
+        const float arg = ((s * m_freqs[static_cast<size_t>(i)]) * 2.0f) * kPi;   // torch: t * freqs * 2 * pi, float32, this order
+        feat[static_cast<size_t>(i)] = std::cos(arg);
+        feat[static_cast<size_t>(half + i)] = std::sin(arg);
+    }
+    std::vector<float> out(static_cast<size_t>(m_features));
+    for (int o = 0; o < m_features; ++o) {
+        const float* row = m_linear_weight.data() + static_cast<size_t>(o) * static_cast<size_t>(m_dim);
+        double acc = m_linear_bias[static_cast<size_t>(o)];
+        for (int i = 0; i < m_dim; ++i) acc += static_cast<double>(row[i]) * static_cast<double>(feat[static_cast<size_t>(i)]);
+        out[static_cast<size_t>(o)] = static_cast<float>(acc);
+    }
+    return out;
 }
 
 } // namespace sao

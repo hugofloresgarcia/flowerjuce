@@ -20,12 +20,13 @@ public:
     ///     use_cuda: If true, use CUDA execution provider.
     ///     use_coreml: If true (macOS), use CoreML execution provider.
     ///     use_migraphx: If true (Linux/ROCm), use MIGraphX execution provider.
-    explicit VAEDecoder(const std::string& onnx_path, float scale = 1.0f, bool use_cuda = false, bool use_coreml = false, bool use_migraphx = false);
+    explicit VAEDecoder(const std::string& onnx_path, float scale = 1.0f, bool use_cuda = false, bool use_coreml = false, bool use_migraphx = false,
+                        const std::string& migraphx_cache_dir = "");
 
     /// Decode latent to audio.
     ///
     /// Args:
-    ///     latents: Latent tensor, flat row-major (1, 64, latent_length).
+    ///     latents: Latent tensor, flat row-major (1, latent_dim, latent_length); latent_dim = size / latent_length.
     ///     latent_length: Number of latent frames (typically 256).
     ///
     /// Returns:
